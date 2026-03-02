@@ -1,0 +1,25 @@
+# 03-istio-proprietary/virtualservice.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  hosts:
+    - "myapp.example.com"
+  gateways:
+    - istio-system/demo-gateway
+  http:
+    - match:
+        - uri:
+            prefix: "/"
+      route:
+        - destination:
+            host: httpbin
+            port:
+              number: 80
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"

@@ -1,0 +1,84 @@
+# 01-sample-app/httpbin.yaml
+# httpbin is used as the demo backend throughout the lab.
+# It echoes request details (headers, method, path, body) which makes it
+# ideal for verifying XFF, header forwarding, and body size settings.
+#
+# Endpoints used in the demo:
+#   GET  /get          — returns request headers and connection info
+#   POST /post         — returns request body (for body size limit testing)
+#   GET  /gzip         — returns gzip-compressed response
+#   GET  /headers      — returns all request headers (for XFF verification)
+#   GET  /status/200   — simple health check
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    istio-injection: enabled       # enables Istio sidecar for all pods in this namespace
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: default
+  labels:
+    app: httpbin
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: httpbin
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: httpbin
+        version: v1
+    spec:
+      containers:
+        - name: httpbin
+          image: docker.io/kennethreitz/httpbin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /status/200
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /status/200
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: default
+  labels:
+    app: httpbin
+spec:
+  selector:
+    app: httpbin
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  type: ClusterIP

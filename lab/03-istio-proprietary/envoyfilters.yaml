@@ -1,0 +1,117 @@
+# 03-istio-proprietary/envoyfilters.yaml
+# EnvoyFilters cover settings that have no native Istio CRD equivalent.
+# These are applied to the istio-ingressgateway workload selector.
+# Apply AFTER the Gateway is running.
+#
+# Warning: EnvoyFilters are unvalidated — a bad patch silently breaks the gateway.
+# Always test in non-production before applying.
+
+---
+# Replaces: client-header-buffer-size + large-client-header-buffers
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gateway-header-buffers
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            max_request_headers_kb: 100
+
+---
+# Replaces: proxy-body-size: 300m
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gateway-max-body
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.buffer
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+            max_request_bytes: 314572800    # 300 * 1024 * 1024
+
+---
+# Replaces: use-gzip + gzip-types: application/json
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gateway-gzip
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.compressor
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            response_direction_config:
+              common_config:
+                min_content_length: 1024
+                content_type:
+                  - application/json
+              disable_on_etag_header: true
+            compressor_library:
+              name: envoy.compression.gzip.compressor
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+
+---
+# Replaces: log-format-upstream (using Telemetry API — preferred over EnvoyFilter for logging)
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: gateway-access-log
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  accessLogging:
+    - providers:
+        - name: envoy
+      format:
+        text: "%REQ(X-FORWARDED-FOR)% (xff) - %DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT% (client) - [%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %BYTES_SENT% \"%REQ(REFERER)%\" \"%REQ(USER-AGENT)%\" %BYTES_RECEIVED% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% %UPSTREAM_HOST%\n"

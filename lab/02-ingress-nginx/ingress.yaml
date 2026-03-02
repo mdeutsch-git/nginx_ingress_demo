@@ -1,0 +1,27 @@
+# 02-ingress-nginx/ingress.yaml
+# The "before" state — this is what we're migrating away from.
+# Apply this first to establish the baseline in the demo.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: httpbin
+  namespace: default
+  annotations:
+    # The two per-Ingress annotations from the customer config
+    nginx.ingress.kubernetes.io/proxy-body-size: 300m
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: httpbin
+                port:
+                  number: 80
