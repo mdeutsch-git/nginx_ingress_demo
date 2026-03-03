@@ -1,0 +1,33 @@
+# 04-istio-gateway-api/destinationrule.yaml
+# Required for Gateway API — the gateway pod provisioned per Gateway resource
+# does not inherit mTLS defaults from the istioctl installation profile.
+# Without this, the gateway cannot verify the upstream sidecar certificate
+# and returns: TLS_error: CERTIFICATE_VERIFY_FAILED: SAN matcher
+#
+# ISTIO_MUTUAL tells the gateway to use Istio-managed certs and derive the
+# expected SAN automatically from the service namespace and service account,
+# rather than requiring a manually specified SAN.
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  host: httpbin.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: echoserver
+  namespace: default
+spec:
+  host: echoserver.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

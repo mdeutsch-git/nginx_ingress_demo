@@ -1,0 +1,45 @@
+# 03-istio-proprietary/gateway.yaml
+# Option A — Istio proprietary API
+# Apply in order: gateway → virtualservice → envoyfilters
+
+# XFF trust (numTrustedProxies) must be scoped to the ingress gateway pod ONLY.
+# Do NOT use meshConfig.defaultConfig.gatewayTopology.numTrustedProxies — that setting
+# applies to every proxy in the mesh. All sidecar inbound listeners will consume and
+# strip X-Forwarded-For before it reaches the application.
+#
+# The correct approach is a proxy.istio.io/config annotation on the gateway Deployment.
+# lab-setup.sh applies this patch automatically. If applying manually:
+#
+#   kubectl patch deployment istio-ingressgateway -n istio-system \
+#     --type merge \
+#     -p '{"spec":{"template":{"metadata":{"annotations":{"proxy.istio.io/config":"{\"gatewayTopology\":{\"numTrustedProxies\":1}}"}}}}}' 
+#   kubectl rollout restart deployment istio-ingressgateway -n istio-system
+
+---
+# Gateway — defines the ingress listener
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: demo-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "myapp.example.com"
+      # Omitting tls.httpsRedirect = ssl-redirect: false
+
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: demo-tls-cert
+      hosts:
+        - "myapp.example.com"

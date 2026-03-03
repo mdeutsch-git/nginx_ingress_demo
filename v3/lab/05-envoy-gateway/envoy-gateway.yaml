@@ -1,0 +1,144 @@
+# 05-envoy-gateway/envoy-gateway.yaml
+# Option C — Envoy Gateway (OSS)
+# Apply in order: envoyproxy → gatewayclass → gateway → client-traffic-policy → backend-traffic-policy → httproute
+# Note: the HTTPRoute resource is identical to Option B — demonstrating Gateway API portability.
+
+---
+# EnvoyProxy — cluster-wide proxy config and telemetry
+# Referenced by GatewayClass via parametersRef
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: demo-proxy-config
+  namespace: envoy-gateway-system
+spec:
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            type: Text
+            # Same field mapping as Istio Telemetry — Envoy access log format is identical
+            text: "%REQ(X-FORWARDED-FOR)% (xff) - %DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT% (client) - [%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %BYTES_SENT% \"%REQ(REFERER)%\" \"%REQ(USER-AGENT)%\" %BYTES_RECEIVED% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% %UPSTREAM_HOST%\n"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+
+---
+# GatewayClass — registers Envoy Gateway as the controller for this class
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: demo-proxy-config
+    namespace: envoy-gateway-system
+
+---
+# Gateway — same structure as Option B, different gatewayClassName
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gateway-eg
+  namespace: default
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "myapp.example.com"
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "myapp.example.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: demo-tls-cert
+
+---
+# ClientTrafficPolicy — typed replacement for several EnvoyFilters
+# Covers: XFF trust, header buffer limits (no xDS patching needed)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: demo-client-policy
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: demo-gateway-eg
+  # Replaces: compute-full-forwarded-for + use-forwarded-headers + http-snippet XFF
+  clientIPDetection:
+    xForwardedFor:
+      numTrustedHops: 1
+  # Replaces: client-header-buffer-size + large-client-header-buffers
+  headers:
+  # Note: max_request_headers_kb requires EnvoyPatchPolicy (not available in ClientTrafficPolicy.headers)
+
+---
+# BackendTrafficPolicy — typed replacement for resilience EnvoyFilters
+# Covers: retries, timeouts, circuit breaking, rate limiting
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: demo-backend-policy
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: httpbin
+  retry:
+    numRetries: 3
+    perRetry:
+      timeout: 10s
+    retryOn:
+      triggers:
+        - "5xx"
+        - "gateway-error"
+        - "connect-failure"
+  timeout:
+    http:
+      requestTimeout: 30s
+  circuitBreaker:
+    maxConnections: 1024
+    maxPendingRequests: 1024
+    maxParallelRequests: 1024
+
+---
+# HTTPRoute — IDENTICAL to Option B
+# This demonstrates Gateway API portability — no changes needed when switching controllers
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  parentRefs:
+    - name: demo-gateway-eg
+      namespace: default
+      sectionName: http
+  hostnames:
+    - "myapp.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /echo
+      backendRefs:
+        - name: echoserver
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: httpbin
+          port: 80

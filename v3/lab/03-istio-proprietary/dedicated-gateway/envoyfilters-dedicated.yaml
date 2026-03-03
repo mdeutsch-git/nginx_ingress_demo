@@ -1,0 +1,126 @@
+# 03-istio-proprietary/dedicated-gateway/envoyfilters-dedicated.yaml
+# These are identical to the EnvoyFilters in the parent directory except
+# the workloadSelector targets "ingress: nginx-migration" instead of
+# "istio: ingressgateway". This scopes every filter to the dedicated
+# gateway only — the shared istio-ingressgateway is completely unaffected.
+
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: nginx-migration-header-buffers
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      ingress: nginx-migration          # scoped to dedicated gateway only
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            max_request_headers_kb: 100    # per-field ceiling — matches nginx large-client-header-buffers
+
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: nginx-migration-max-body
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      ingress: nginx-migration
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.buffer
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+            max_request_bytes: 314572800    # 300MB — matches proxy-body-size: 300m
+
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: nginx-migration-gzip
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      ingress: nginx-migration
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.compressor
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            response_direction_config:
+              common_config:
+                min_content_length: 100     # lowered for lab (production default: 1024)
+                content_type:
+                  - application/json
+              disable_on_etag_header: true
+            compressor_library:
+              name: envoy.compression.gzip.compressor
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: nginx-migration-access-log
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      ingress: nginx-migration
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            access_log:
+              - name: envoy.access_loggers.stream
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                  log_format:
+                    text_format_source:
+                      inline_string: "%REQ(X-FORWARDED-FOR)% (xff) - %DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT% (client) - [%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %BYTES_SENT% \"%REQ(REFERER)%\" \"%REQ(USER-AGENT)%\" %BYTES_RECEIVED% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% %UPSTREAM_HOST%\n"

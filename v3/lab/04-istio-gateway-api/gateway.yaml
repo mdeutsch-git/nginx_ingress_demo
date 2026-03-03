@@ -1,0 +1,40 @@
+# 04-istio-gateway-api/gateway.yaml
+# Option B — Istio implementing the Gateway API
+# GatewayClass "istio" is automatically created when Istio is installed with Gateway API support.
+# The same EnvoyFilters from Option A apply here — they target the gateway workload, not the API type.
+#
+# XFF trust: the proxy.istio.io/config annotation on the Gateway resource is propagated
+# by Istio to the pod template of the provisioned Deployment (demo-gateway-istio).
+# This scopes numTrustedProxies to this gateway only — sidecars are unaffected.
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gateway
+  namespace: istio-system
+  annotations:
+    proxy.istio.io/config: '{"gatewayTopology": {"numTrustedProxies": 1}}'
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "myapp.example.com"
+      allowedRoutes:
+        namespaces:
+          from: All               # Allow HTTPRoutes from any namespace to attach
+
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "myapp.example.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: demo-tls-cert
+            namespace: istio-system
+      allowedRoutes:
+        namespaces:
+          from: All
