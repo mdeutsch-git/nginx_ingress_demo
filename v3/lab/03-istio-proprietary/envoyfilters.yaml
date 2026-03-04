@@ -1,7 +1,7 @@
 # 03-istio-proprietary/envoyfilters.yaml
-# EnvoyFilters cover settings that have no native Istio CRD equivalent.
-# These are applied to the istio-ingressgateway workload selector.
-# Apply AFTER the Gateway is running.
+# EnvoyFilters scoped to the dedicated gateway only.
+# workloadSelector targets "ingress: nginx-migration" — the shared istio-ingressgateway
+# (if present) is unaffected.
 #
 # Warning: EnvoyFilters are unvalidated — a bad patch silently breaks the gateway.
 # Always test in non-production before applying.
@@ -11,12 +11,12 @@
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: gateway-header-buffers
+  name: nginx-migration-header-buffers
   namespace: istio-system
 spec:
   workloadSelector:
     labels:
-      istio: ingressgateway
+      ingress: nginx-migration          # scoped to dedicated gateway only
   configPatches:
     - applyTo: NETWORK_FILTER
       match:
@@ -30,19 +30,19 @@ spec:
         value:
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-            max_request_headers_kb: 100    # per-header ceiling matches nginx large-client-header-buffers buffer size (100k per header line)    # matches 4 x 100k large-client-header-buffers ceiling
+            max_request_headers_kb: 100    # per-header ceiling — matches nginx large-client-header-buffers
 
 ---
 # Replaces: proxy-body-size: 300m
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: gateway-max-body
+  name: nginx-migration-max-body
   namespace: istio-system
 spec:
   workloadSelector:
     labels:
-      istio: ingressgateway
+      ingress: nginx-migration
   configPatches:
     - applyTo: HTTP_FILTER
       match:
@@ -59,19 +59,19 @@ spec:
           name: envoy.filters.http.buffer
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
-            max_request_bytes: 314572800    # 300 * 1024 * 1024
+            max_request_bytes: 314572800    # 300MB — matches proxy-body-size: 300m
 
 ---
 # Replaces: use-gzip + gzip-types: application/json
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: gateway-gzip
+  name: nginx-migration-gzip
   namespace: istio-system
 spec:
   workloadSelector:
     labels:
-      istio: ingressgateway
+      ingress: nginx-migration
   configPatches:
     - applyTo: HTTP_FILTER
       match:
@@ -101,21 +101,15 @@ spec:
 
 ---
 # Replaces: log-format-upstream
-# Note: Using EnvoyFilter instead of Telemetry API — the Telemetry v1alpha1 API does not
-# support inlining a format string directly on spec.accessLogging[].format without a
-# pre-registered MeshConfig extensionProvider. The EnvoyFilter approach is version-agnostic.
-#
-# To use the Telemetry API instead, define the format as a named extensionProvider in
-# MeshConfig first, then reference that provider name in a Telemetry resource.
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: gateway-access-log
+  name: nginx-migration-access-log
   namespace: istio-system
 spec:
   workloadSelector:
     labels:
-      istio: ingressgateway
+      ingress: nginx-migration
   configPatches:
     - applyTo: NETWORK_FILTER
       match:

@@ -94,36 +94,28 @@ curl -s -I -H "Host: myapp.example.com" \
 # → content-encoding: gzip
 ```
 
-Show that large headers pass through:
-
-```bash
-# Large header — client-header-buffer-size 100k is active
-python3 -c "print('X-Large-Token: ' + 'A'*81920)" > /tmp/hdr.txt
-curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-  -H "Host: myapp.example.com" \
-  -H "@/tmp/hdr.txt" \
-  http://${NGINX_IP}/echo
-rm /tmp/hdr.txt
-# → HTTP 200  (would be 431 without the buffer config)
-```
-
-> "These three behaviors — XFF handling, gzip, header buffer size — are what we need to preserve across the migration. Watch what changes as we move to each option."
+> "These two behaviors — XFF handling and gzip — are what we need to preserve across the migration. Watch what changes as we move to each option."
 
 ---
 
 ## Section 2: Option A — Istio Proprietary API (6 min)
 
-> "Because you already have Istio, the fastest path is Option A — replacing the Ingress resource with an Istio Gateway and VirtualService."
+> "Because you already have Istio, the fastest path is Option A — replacing the Ingress resource with an Istio Gateway and VirtualService. We deploy a dedicated gateway pod so existing traffic is completely isolated — no shared ingressgateway required."
 
 ```bash
+# Deploys: ServiceAccount, Deployment, Service, Role/RoleBinding, Gateway, EnvoyFilters, VirtualService, DestinationRules
 kubectl apply -f 03-istio-proprietary/
-kubectl get gateway -n istio-system
+
+kubectl get pods -n istio-system -l ingress=nginx-migration --watch
+# Ctrl-C when Running/2/2
+
+kubectl get gateway nginx-migration-gateway -n istio-system
 kubectl get virtualservice -n nginx-demo
 ```
 
 **Set the IP:**
 ```bash
-ISTIO_A_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
+ISTIO_A_IP=$(kubectl get svc nginx-migration-ingressgateway -n istio-system \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 echo "istio-a: ${ISTIO_A_IP}"
 ```
@@ -169,18 +161,7 @@ curl -s -I -H "Host: myapp.example.com" \
 # → content-encoding: gzip
 ```
 
-**Test 4 — Large headers preserved (via EnvoyFilter):**
-```bash
-python3 -c "print('X-Large-Token: ' + 'A'*81920)" > /tmp/hdr.txt
-curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-  -H "Host: myapp.example.com" \
-  -H "@/tmp/hdr.txt" \
-  http://${ISTIO_A_IP}/echo
-rm /tmp/hdr.txt
-# → HTTP 200
-```
-
-**Test 5 — Body size limit preserved (via EnvoyFilter):**
+**Test 4 — Body size limit preserved (via EnvoyFilter):**
 ```bash
 # 1MB POST — well under the 300MB limit, confirms the buffer filter is active
 python3 -c "import json; print(json.dumps({'data': 'x'*1048576}))" > /tmp/body.json
@@ -193,10 +174,10 @@ rm /tmp/body.json
 # → HTTP 200
 ```
 
-**Test 6 — Access log format (open a second terminal):**
+**Test 5 — Access log format (open a second terminal):**
 ```bash
 # Run this in a second terminal, then make a request
-kubectl logs -n istio-system -l istio=ingressgateway -f --tail=0
+kubectl logs -n istio-system -l ingress=nginx-migration -f --tail=0
 
 # The log line should match the nginx-equivalent format:
 # 1.2.3.4 (xff) - 10.x.x.x (client) - [timestamp] "GET /headers HTTP/1.1" 200 ...
@@ -205,33 +186,15 @@ kubectl logs -n istio-system -l istio=ingressgateway -f --tail=0
 Show the EnvoyFilter that enables all of this:
 ```bash
 kubectl get envoyfilter -n istio-system
-cat 03-istio-proprietary/envoyfilters.yaml | head -40
+# → nginx-migration-header-buffers, nginx-migration-max-body, nginx-migration-gzip, nginx-migration-access-log
+head -40 03-istio-proprietary/envoyfilters.yaml
 ```
 
-> "All five behaviors are preserved. The cost is these EnvoyFilters — raw xDS config, no validation. A wrong path or field name silently breaks the gateway. This is the honest tradeoff of Option A."
+> "All four behaviors are preserved. The cost is these EnvoyFilters — raw xDS config, no validation. A wrong path or field name silently breaks the gateway. This is the honest tradeoff of Option A."
 
 ```bash
 bash verify.sh istio-proprietary
 ```
-
----
-
-## Section 2a: Dedicated gateway (1 min — show if audience has production concerns)
-
-> "One question always comes up: 'What about our existing production traffic through `istio-ingressgateway`?' The EnvoyFilters above target `istio: ingressgateway` — they apply to everything running through the shared gateway."
-
-```bash
-kubectl apply -f 03-istio-proprietary/dedicated-gateway/
-kubectl get pods -n istio-system -l ingress=nginx-migration
-
-# Confirm scoping — dedicated filters don't touch the shared gateway
-kubectl get envoyfilter -n istio-system \
-  -o jsonpath='{range .items[*]}{.metadata.name}{" → workloadSelector: "}{.spec.workloadSelector.labels}{"\n"}{end}'
-# nginx-migration-* filters → workloadSelector: {"ingress":"nginx-migration"}
-# gateway-* filters         → workloadSelector: {"istio":"ingressgateway"}
-```
-
-> "Two separate label selectors. The shared gateway is untouched. Test the migration path independently — cutover is a DNS change, not a config change."
 
 ---
 
@@ -355,18 +318,7 @@ curl -s -I -H "Host: myapp.example.com" \
 # → content-encoding: gzip
 ```
 
-**Test 4 — Large headers working (max_request_headers_kb via EnvoyPatchPolicy):**
-```bash
-python3 -c "print('X-Large-Token: ' + 'A'*81920)" > /tmp/hdr.txt
-curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-  -H "Host: myapp.example.com" \
-  -H "@/tmp/hdr.txt" \
-  http://${EG_IP}/echo
-rm /tmp/hdr.txt
-# → HTTP 200
-```
-
-**Test 5 — BackendTrafficPolicy circuit breaker and retry in effect:**
+**Test 4 — BackendTrafficPolicy circuit breaker and retry in effect:**
 ```bash
 # httpbin /status/503 returns 503 — triggers the 5xx retry rule
 # With retry.numRetries: 3, Envoy retries 3 times before returning to the client
@@ -493,22 +445,6 @@ curl -sv -H "Host: myapp.example.com" \
   -H "X-Pad: $(python3 -c "print('A'*1200)")" \
   http://${GW_IP}/get 2>&1 | grep -iE "content-encoding|< HTTP"
 
-# ── Header size ───────────────────────────────────────────────────────────────
-# Single 80k header — within one buffer
-python3 -c "print('X-Token: ' + 'A'*81920)" > /tmp/hdr1.txt
-curl -s -o /dev/null -w "single 80k header: HTTP %{http_code}\n" \
-  -H "Host: myapp.example.com" -H "@/tmp/hdr1.txt" http://${GW_IP}/echo
-rm /tmp/hdr1.txt
-
-# Four 80k headers — exercises the full pool
-python3 -c "
-for i in range(1,5):
-    print(f'X-Token-{i}: ' + 'A'*81920)
-" > /tmp/hdr4.txt
-curl -s -o /dev/null -w "4x 80k headers: HTTP %{http_code}\n" \
-  -H "Host: myapp.example.com" -H "@/tmp/hdr4.txt" http://${GW_IP}/echo
-rm /tmp/hdr4.txt
-
 # ── Body size ─────────────────────────────────────────────────────────────────
 python3 -c "import json; print(json.dumps({'data': 'x'*1048576}))" > /tmp/body.json
 curl -s -o /dev/null -w "1MB body: HTTP %{http_code}\n" \
@@ -518,7 +454,8 @@ curl -s -o /dev/null -w "1MB body: HTTP %{http_code}\n" \
 rm /tmp/body.json
 
 # ── Live access logs ──────────────────────────────────────────────────────────
-kubectl logs -n istio-system -l istio=ingressgateway -f --tail=0
+# Option A dedicated gateway:
+kubectl logs -n istio-system -l ingress=nginx-migration -f --tail=0
 # Option B auto-provisioned pod:
 kubectl logs -n istio-system \
   -l gateway.networking.k8s.io/gateway-name=demo-gateway -f --tail=0

@@ -1,0 +1,78 @@
+# 03-istio-proprietary/deployment.yaml
+# Deploys a dedicated ingress gateway pod for the nginx migration.
+#
+# Why a dedicated gateway?
+# EnvoyFilters use workloadSelector to target pods by label. The unique label
+# "ingress: nginx-migration" on this pod means gzip, body size, header buffer, and
+# log format configs apply here only — any existing istio-ingressgateway is untouched.
+#
+# XFF: the proxy.istio.io/config annotation is scoped to this pod template only.
+# Do NOT use meshConfig.defaultConfig.gatewayTopology.numTrustedProxies — that
+# propagates to all proxies and strips X-Forwarded-For at every sidecar inbound listener.
+#
+# image: auto — istiod replaces this with the correct proxy version automatically,
+# avoiding version mismatch / CERTIFICATE_VERIFY_FAILED after Istio upgrades.
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-migration-gateway
+  namespace: istio-system
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-migration-ingressgateway
+  namespace: istio-system
+  labels:
+    app: nginx-migration-ingressgateway
+    ingress: nginx-migration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-migration-ingressgateway
+      ingress: nginx-migration
+  template:
+    metadata:
+      labels:
+        app: nginx-migration-ingressgateway
+        ingress: nginx-migration
+      annotations:
+        inject.istio.io/templates: gateway
+        proxy.istio.io/config: '{"gatewayTopology": {"numTrustedProxies": 1}}'
+    spec:
+      serviceAccountName: nginx-migration-gateway
+      containers:
+        - name: istio-proxy
+          image: auto
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-migration-ingressgateway
+  namespace: istio-system
+  labels:
+    app: nginx-migration-ingressgateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx-migration-ingressgateway
+    ingress: nginx-migration
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443

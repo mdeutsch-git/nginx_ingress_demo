@@ -1,30 +1,21 @@
 # 03-istio-proprietary/gateway.yaml
-# Option A — Istio proprietary API
-# Apply in order: gateway → virtualservice → envoyfilters
-
-# XFF trust (numTrustedProxies) must be scoped to the ingress gateway pod ONLY.
-# Do NOT use meshConfig.defaultConfig.gatewayTopology.numTrustedProxies — that setting
-# applies to every proxy in the mesh. All sidecar inbound listeners will consume and
-# strip X-Forwarded-For before it reaches the application.
+# Option A — Istio proprietary API using a dedicated gateway pod.
 #
-# The correct approach is a proxy.istio.io/config annotation on the gateway Deployment.
-# lab-setup.sh applies this patch automatically. If applying manually:
+# The selector "ingress: nginx-migration" targets ONLY the dedicated Deployment
+# deployed by deployment.yaml. The shared istio-ingressgateway (if present) is
+# completely unaffected — its label is "istio: ingressgateway".
 #
-#   kubectl patch deployment istio-ingressgateway -n istio-system \
-#     --type merge \
-#     -p '{"spec":{"template":{"metadata":{"annotations":{"proxy.istio.io/config":"{\"gatewayTopology\":{\"numTrustedProxies\":1}}"}}}}}' 
-#   kubectl rollout restart deployment istio-ingressgateway -n istio-system
+# Apply order: rbac.yaml → deployment.yaml → gateway.yaml → envoyfilters.yaml → virtualservice.yaml
 
 ---
-# Gateway — defines the ingress listener
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
-  name: demo-gateway
+  name: nginx-migration-gateway
   namespace: istio-system
 spec:
   selector:
-    istio: ingressgateway
+    ingress: nginx-migration          # targets ONLY the dedicated deployment
   servers:
     - port:
         number: 80

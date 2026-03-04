@@ -65,16 +65,14 @@ v3/
     │   └── echoserver.yaml             Used for large-header tests (/echo); no Werkzeug 8k limit
     ├── 02-ingress-nginx/
     │   └── ingress.yaml                Starting state — routes /echo + / through nginx
-    ├── 03-istio-proprietary/           Option A
-    │   ├── gateway.yaml                Targets shared istio-ingressgateway
-    │   ├── virtualservice.yaml         Routing with retries/timeouts
-    │   ├── envoyfilters.yaml           Gzip, body size, header buffers, access log
+    ├── 03-istio-proprietary/           Option A — dedicated gateway (no shared ingressgateway required)
+    │   ├── rbac.yaml                   ServiceAccount + Role/RoleBinding for TLS secret access
+    │   ├── deployment.yaml             Dedicated gateway pod (label: ingress: nginx-migration) + Service
+    │   ├── gateway.yaml                Istio Gateway → selector: ingress: nginx-migration
+    │   ├── envoyfilters.yaml           Gzip, body size, header buffers, access log — scoped to dedicated pod
+    │   ├── virtualservice.yaml         Routing with retries/timeouts → nginx-migration-gateway
     │   ├── destinationrule.yaml        ISTIO_MUTUAL for httpbin + echoserver
-    │   └── dedicated-gateway/          RECOMMENDED for live environments
-    │       ├── rbac.yaml               ServiceAccount + RoleBinding for secret access
-    │       ├── deployment.yaml         Second gateway pod (label: ingress: nginx-migration)
-    │       ├── gateway.yaml            Gateway targeting dedicated pod only
-    │       └── envoyfilters-dedicated.yaml  EnvoyFilters scoped to dedicated pod label
+    │   └── dedicated-gateway/          Archived — superseded by parent directory
     ├── 04-istio-gateway-api/           Option B
     │   ├── gateway.yaml                gatewayClassName: istio → auto-provisions demo-gateway-istio pod
     │   ├── httproute.yaml              Identical to Option C routes (portability demo)
@@ -99,17 +97,12 @@ bash verify.sh nginx        # baseline — confirm all 6 tests pass
 
 ### Stage 1: Option A — Istio Proprietary API
 
-**Recommended (dedicated gateway — doesn't touch existing traffic):**
-```bash
-kubectl apply -f 03-istio-proprietary/dedicated-gateway/
-kubectl get pods -n istio-system -l ingress=nginx-migration
-DEDICATED_IP=$(kubectl get svc nginx-migration-ingressgateway -n istio-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-curl -s -H "Host: myapp.example.com" http://${DEDICATED_IP}/headers
-```
-
-**Lab path (shared gateway):**
 ```bash
 kubectl apply -f 03-istio-proprietary/
+kubectl get pods -n istio-system -l ingress=nginx-migration --watch
+# Ctrl-C when Running/2/2
+ISTIO_A_IP=$(kubectl get svc nginx-migration-ingressgateway -n istio-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+curl -s -H "Host: myapp.example.com" http://${ISTIO_A_IP}/headers
 bash verify.sh istio-proprietary
 ```
 

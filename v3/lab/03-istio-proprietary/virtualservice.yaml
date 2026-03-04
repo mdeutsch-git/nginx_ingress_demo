@@ -8,7 +8,7 @@ spec:
   hosts:
     - "myapp.example.com"
   gateways:
-    - istio-system/demo-gateway
+    - istio-system/nginx-migration-gateway
   http:
     - match:
         - uri:
