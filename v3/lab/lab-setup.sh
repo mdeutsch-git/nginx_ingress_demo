@@ -3,13 +3,16 @@
 # Run once before starting the demo
 # Usage: bash lab-setup.sh
 #
+# Prerequisites:
+#   - Istio installed and istiod running in istio-system (TSB-managed is supported)
+#   - kubectl and helm available on PATH
+#
 # Stateless design notes:
 #   - TLS secrets: idempotent (kubectl create --dry-run | apply)
-#   - Istio/EG/nginx: all via helm upgrade --install (idempotent)
+#   - ingress-nginx/EG: all via helm upgrade --install (idempotent)
 #   - XFF patch on istio-ingressgateway: conditional, skipped if annotation already set
-#   - Sidecar pod restarts: only the lab 'nginx-demo' namespace is restarted automatically.
-#     After an Istio upgrade, restart all other sidecar-injected namespaces manually:
-#       kubectl rollout restart deployment -n <your-namespace>
+#   - Istio: pre-installed (by TSB or standalone) — this script only labels the lab
+#     namespace for sidecar injection via the standard istio-injection=enabled label.
 
 set -euo pipefail
 
@@ -17,30 +20,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-ISTIO_VERSION="1.29.0"
 EG_VERSION="1.7.0"
 GATEWAY_API_VERSION="v1.5.0"
 
 echo "==> [1/6] Installing Gateway API CRDs (experimental channel)"
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
+# Remove the safe-upgrades policy that blocks standard→experimental channel upgrades
+kubectl delete validatingadmissionpolicy safe-upgrades.gateway.networking.k8s.io --ignore-not-found
+kubectl delete validatingadmissionpolicybinding safe-upgrades.gateway.networking.k8s.io --ignore-not-found
+kubectl apply --server-side --force-conflicts -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
 
-echo "==> [2/6] Installing/upgrading Istio (demo profile, ${ISTIO_VERSION})"
-if ! command -v istioctl &>/dev/null; then
-  curl -L https://istio.io/downloadIstio | ISTIO_VERSION=${ISTIO_VERSION} sh -
-  export PATH="${SCRIPT_DIR}/istio-${ISTIO_VERSION}/bin:$PATH"
-fi
-
-# Create the lab namespace before installing Istio so the injection label is present
-# when pods are first created. Idempotent via --dry-run=client.
+echo "==> [2/6] Configuring lab namespace for Istio sidecar injection"
+# Istio is pre-installed — create the namespace and enable injection.
+# TSB's webhook respects istio-injection=enabled on a clean cluster.
 kubectl create namespace nginx-demo --dry-run=client -o yaml | kubectl apply -f -
-
-# istioctl install handles both fresh installs and in-place upgrades.
-# After an upgrade, existing sidecar-injected pods keep their old proxy image until restarted.
-# The lab namespace (nginx-demo) is restarted below. Restart other namespaces manually.
-istioctl install --set profile=demo -y
 kubectl label namespace nginx-demo istio-injection=enabled --overwrite
 
-echo "  Restarting lab pods in 'nginx-demo' to pick up new sidecar image..."
+echo "  Restarting lab pods in 'nginx-demo' to pick up current sidecar image..."
 # || true: no-op if no deployments exist yet on first run
 kubectl rollout restart deployment -n nginx-demo 2>/dev/null || true
 kubectl rollout status deployment -n nginx-demo --timeout=120s 2>/dev/null || true
@@ -78,12 +73,11 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait
 
 echo "==> [4/6] Installing Envoy Gateway"
-helm repo add envoy-gateway https://charts.gateway.envoyproxy.io --force-update
-helm upgrade --install envoy-gateway envoy-gateway/gateway-helm \
-  --namespace envoy-gateway-system \
-  --create-namespace \
+helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
   --version v${EG_VERSION} \
-  --wait
+  -n envoy-gateway-system \
+  --create-namespace
+kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
 
 echo "==> [5/6] Creating TLS certificate secrets (idempotent)"
 # generate-tls-secret.sh uses kubectl create --dry-run | apply — safe to run multiple times.
