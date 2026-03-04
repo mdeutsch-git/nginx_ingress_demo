@@ -1,0 +1,102 @@
+# 04-istio-gateway-api/envoyfilters.yaml
+# EnvoyFilters for the auto-provisioned Option B gateway.
+#
+# The workloadSelector targets the Istio-provisioned pod.
+# When gatewayClassName: istio creates a Deployment, the pods are labelled:
+#   gateway.networking.k8s.io/gateway-name: demo-gateway
+#
+# This is DIFFERENT from Option A (label: ingress: nginx-migration).
+# The Option A EnvoyFilters do NOT apply here.
+
+---
+# Replaces: client-header-buffer-size + large-client-header-buffers
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: demo-gateway-header-buffers
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: demo-gateway
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            max_request_headers_kb: 100
+
+---
+# Replaces: proxy-body-size: 300m
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: demo-gateway-max-body
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: demo-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.buffer
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+            max_request_bytes: 314572800    # 300MB
+
+---
+# Replaces: use-gzip + gzip-types: application/json
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: demo-gateway-gzip
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: demo-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.compressor
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            response_direction_config:
+              common_config:
+                min_content_length: 100     # lowered for lab (production default: 1024)
+                content_type:
+                  - application/json
+              disable_on_etag_header: true
+            compressor_library:
+              name: envoy.compression.gzip.compressor
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip

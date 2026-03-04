@@ -59,53 +59,44 @@ kubectl get ingress -n nginx-demo --watch
 # Ctrl-C when ADDRESS is populated
 
 bash verify.sh nginx
-# Expected: 6/6 passed
-```
-If header tests fail:
-```
-# Check that the large-buffer config is actually live in nginx
-kubectl get pod -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx -o name
-kubectl exec -n ingress-nginx <pod-name> -- nginx -T | grep -E "large_client_header|client_header_buffer"
-# → large_client_header_buffers 4 100k;
-# → client_header_buffer_size 100k;
-
-# If values are wrong, force a reload
-kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx
-kubectl rollout status deployment ingress-nginx-controller -n ingress-nginx
+# Expected: 4/4 passed
 ```
 
 ---
 
 ## Step 3 — Option A: Istio Proprietary API
 
+Deploys a dedicated gateway pod — no shared `istio-ingressgateway` required.
 ```
 kubectl apply -f 03-istio-proprietary/
-kubectl get gateway -n istio-system
-kubectl get virtualservice -n nginx-demo
+
+# Wait for the dedicated gateway pod to be ready
+kubectl get pods -n istio-system -l ingress=nginx-migration --watch
+# Ctrl-C when Running/2/2
+
+kubectl get svc nginx-migration-ingressgateway -n istio-system
+# Must have an EXTERNAL-IP before verify.sh will work
 
 bash verify.sh istio-proprietary
-# Expected: 6/6 passed
+# Expected: 4/4 passed
 ```
 Check EnvoyFilters applied:
 
 ```
 kubectl get envoyfilter -n istio-system
-# → gateway-gzip, gateway-body-size, gateway-header-size, gateway-access-log
+# → nginx-migration-header-buffers, nginx-migration-max-body, nginx-migration-gzip, nginx-migration-access-log
 ```
-If XFF test fails (most common issue):
+If XFF test fails:
 ```
-# Confirm the annotation is on the gateway pod
-kubectl get deployment istio-ingressgateway -n istio-system \
+# XFF trust is baked into the Deployment pod template annotation — confirm it's present
+kubectl get deployment nginx-migration-ingressgateway -n istio-system \
   -o jsonpath='{.spec.template.metadata.annotations.proxy\.istio\.io/config}'
 # → {"gatewayTopology":{"numTrustedProxies":1}}
 
-# If missing, lab-setup.sh should have added it — check if it was skipped
-# Manually patch:
-kubectl patch deployment istio-ingressgateway -n istio-system \
-  --type merge \
-  -p '{"spec":{"template":{"metadata":{"annotations":{"proxy.istio.io/config":"{\"gatewayTopology\":{\"numTrustedProxies\":1}}"}}}}}'
-kubectl rollout restart deployment istio-ingressgateway -n istio-system
-kubectl rollout status deployment istio-ingressgateway -n istio-system
+# If the pod is running but annotation is missing, re-apply and restart:
+kubectl apply -f 03-istio-proprietary/deployment.yaml
+kubectl rollout restart deployment nginx-migration-ingressgateway -n istio-system
+kubectl rollout status deployment nginx-migration-ingressgateway -n istio-system
 ```
 
 ---
@@ -122,7 +113,7 @@ kubectl get svc demo-gateway-istio -n istio-system
 # Must have an EXTERNAL-IP before verify.sh will work
 
 bash verify.sh istio-gateway-api
-# Expected: 6/6 passed
+# Expected: 4/4 passed
 ```
 If CERTIFICATE_VERIFY_FAILED / 503 on all requests:
 
@@ -156,7 +147,7 @@ kubectl get envoypatchpolicy -n nginx-demo
 kubectl describe envoypatchpolicy gateway-gzip -n nginx-demo | grep -A 5 "Conditions:"
 
 bash verify.sh envoy-gateway
-# Expected: 6/6 passed
+# Expected: 4/4 passed
 ```
 If gzip test fails:
 
@@ -182,7 +173,7 @@ for stage in nginx istio-proprietary istio-gateway-api envoy-gateway; do
   bash verify.sh $stage
 done
 ```
-All four should show 6 passed, 0 failed.
+All four should show 4 passed, 0 failed.
 
 ---
 

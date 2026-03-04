@@ -82,8 +82,28 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait
 
 echo "==> [4/6] Installing Envoy Gateway"
-# --skip-crds: Gateway API CRDs (v1.5.0) were already applied in step 1.
-# EG's bundled CRDs are older and blocked by the safe-upgrades policy in v1.5.0.
+# Gateway API CRDs (v1.5.0) were installed in step 1.
+# EG's helm chart bundles both Gateway API CRDs (older) and EG-specific CRDs.
+# --skip-crds would skip everything — instead, extract only EG-specific CRDs
+# (gateway.envoyproxy.io group: EnvoyPatchPolicy, ClientTrafficPolicy, etc.)
+# and apply them separately, leaving the Gateway API v1.5.0 CRDs untouched.
+echo "  Installing Envoy Gateway-specific CRDs (gateway.envoyproxy.io)..."
+# Use EG's release install.yaml (not helm template) — helm template renders the envoyproxies
+# CRD with a malformed v1alpha1 entry (Served:false, Storage:false) that kubectl rejects.
+# The release artifact has correctly-formed CRDs.
+curl -sL "https://github.com/envoyproxy/gateway/releases/download/v${EG_VERSION}/install.yaml" \
+  | python3 -c "
+import sys, re
+content = sys.stdin.read()
+# Split on '---' only when it appears as a standalone line (document separator).
+# A naive .split('---') breaks CRDs that contain '---' inside description strings.
+docs = re.split(r'^---\s*$', content, flags=re.MULTILINE)
+for doc in docs:
+    if 'kind: CustomResourceDefinition' in doc and 'gateway.envoyproxy.io' in doc:
+        print('---')
+        print(doc.strip())
+" | kubectl apply --server-side --force-conflicts -f -
+
 helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
   --version v${EG_VERSION} \
   -n envoy-gateway-system \

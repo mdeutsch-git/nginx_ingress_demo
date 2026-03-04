@@ -1,7 +1,9 @@
 # 04-istio-gateway-api/gateway.yaml
 # Option B — Istio implementing the Gateway API
 # GatewayClass "istio" is automatically created when Istio is installed with Gateway API support.
-# The same EnvoyFilters from Option A apply here — they target the gateway workload, not the API type.
+# EnvoyFilters for this gateway are in envoyfilters.yaml — they target the auto-provisioned pod
+# via label gateway.networking.k8s.io/gateway-name: demo-gateway.
+# (Option A filters target label "ingress: nginx-migration" and do NOT apply here.)
 #
 # XFF trust: the proxy.istio.io/config annotation on the Gateway resource is propagated
 # by Istio to the pod template of the provisioned Deployment (demo-gateway-istio).
