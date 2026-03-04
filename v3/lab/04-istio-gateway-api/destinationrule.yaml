@@ -13,9 +13,9 @@ apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
   name: httpbin
-  namespace: default
+  namespace: nginx-demo
 spec:
-  host: httpbin.default.svc.cluster.local
+  host: httpbin.nginx-demo.svc.cluster.local
   trafficPolicy:
     tls:
       mode: ISTIO_MUTUAL
@@ -25,9 +25,9 @@ apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
   name: echoserver
-  namespace: default
+  namespace: nginx-demo
 spec:
-  host: echoserver.default.svc.cluster.local
+  host: echoserver.nginx-demo.svc.cluster.local
   trafficPolicy:
     tls:
       mode: ISTIO_MUTUAL

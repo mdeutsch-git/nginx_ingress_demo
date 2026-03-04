@@ -1033,13 +1033,13 @@ Build an inventory:
 
 ```bash
 kubectl get crd gateways.gateway.networking.k8s.io &> /dev/null || \
-  kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
+  kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
 ```
 
 For Istio with experimental Gateway API features (TCPRoute, GRPCRoute):
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/experimental-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/experimental-install.yaml
 ```
 
 ### Phase 3: Create the Gateway
@@ -1224,151 +1224,3 @@ kubectl delete ingress myapp -n default
 # Finally, remove ingress-nginx once all routes are migrated
 helm uninstall ingress-nginx -n ingress-nginx
 ```
-
----
-
-## 9. Demo Script
-
-> **Format:** Verbal walkthrough for a technical audience. Estimated time: 20–25 minutes.  
-> **Setup:** A cluster with Istio installed, ingress-nginx running alongside, and a sample app deployed.
-
----
-
-### Opening (2 min)
-
-> "Today we're going to walk through what it looks like to migrate off ingress-nginx when you already have Istio in place. This isn't a theoretical discussion — we'll look at real configs and a live migration.
->
-> The question we're answering isn't 'should we use Envoy' — you already are. Every time a request hits your ingress-nginx controller, Envoy sidecars are handling the internal traffic. What we're doing today is extending that same data plane to the edge, and deciding how we want to manage it."
-
----
-
-### Section 1: What's wrong with the current state (3 min)
-
-Show the current ingress-nginx ConfigMap:
-
-```bash
-kubectl get configmap ingress-nginx-controller -n ingress-nginx -o yaml
-```
-
-> "Notice a few things. `annotations-risk-level: Critical` — this means we've explicitly accepted that any team with Ingress create access can inject raw nginx config. That's a security concern.
->
-> `http-snippet` injects config directly into `nginx.conf`. There's no validation, no schema — it's a string that gets templated in. If there's a syntax error, nginx fails to reload and traffic drops.
->
-> `client-header-buffer-size: 100k` — the nginx default is 1k. This was changed because something was breaking. We're compensating for a problem rather than understanding it.
->
-> This is what 'it works' looks like before it doesn't."
-
----
-
-### Section 2: Option A — Istio Proprietary API (5 min)
-
-> "Because you already have Istio, the fastest path is Option A — replacing the Ingress resource with an Istio Gateway and VirtualService. The ingress-nginx controller goes away, the Istio ingress gateway takes over."
-
-Apply and show:
-
-```bash
-kubectl apply -f gateway-istio-proprietary.yaml
-kubectl apply -f virtualservice.yaml
-kubectl get gateway,virtualservice -n istio-system
-```
-
-> "The Gateway defines the listener — port, protocol, TLS, which hosts to accept. The VirtualService defines how to route traffic once it's accepted. These are two separate resources, which lets you change routing without touching the listener config.
->
-> Where does this fall short? The extension model. If I need gzip, or the 300m body limit, I'm writing an EnvoyFilter — raw xDS config wrapped in a Kubernetes resource. It's powerful but unvalidated. A typo here silently breaks the gateway."
-
-Show an EnvoyFilter:
-```bash
-kubectl apply -f envoyfilter-max-body.yaml
-kubectl describe envoyfilter gateway-max-body -n istio-system
-```
-
-> "This is where Option A lives — powerful, fast to adopt, but the extension story is rough edges."
-
----
-
-### Section 3: Option B — Istio with Gateway API (5 min)
-
-> "Option B uses the same Istio control plane, same Envoy data plane, but swaps the API to the Kubernetes-standard Gateway API. The reason this matters isn't technical — it's operational."
-
-Apply and show:
-
-```bash
-kubectl apply -f gateway-api.yaml
-kubectl apply -f httproute.yaml
-kubectl get gateway,httproute -A
-```
-
-> "Two things I want to highlight.
->
-> First — `allowedRoutes.namespaces.from: All`. This is the cluster operator saying 'any namespace can attach routes to this gateway.' If I set this to `Selector`, only specific namespaces can. ingress-nginx has no equivalent — any namespace can create an Ingress and it goes through the same controller.
->
-> Second — the HTTPRoute is in the `default` namespace. The Gateway is in `istio-system`. Different teams own these. The application team writes the HTTPRoute; the platform team writes the Gateway. No overlap, no stepping on each other.
->
-> The EnvoyFilter story is the same as Option A — still raw xDS for anything beyond routing. That's the honest limitation."
-
----
-
-### Section 4: Option C — Envoy Gateway (5 min)
-
-> "Envoy Gateway is a separate controller. It's not Istio. It doesn't do service mesh. But it implements the same Gateway API — meaning the HTTPRoute we just wrote works unchanged against it.
->
-> The reason to consider it alongside Istio is the extension model. Watch this."
-
-Show ClientTrafficPolicy vs EnvoyFilter side by side:
-
-```bash
-# What Istio needs for header buffer config:
-cat envoyfilter-header-buffers.yaml
-
-# What Envoy Gateway needs:
-cat client-traffic-policy.yaml
-```
-
-> "Same outcome. One is raw xDS — `envoy.filters.network.http_connection_manager`, `typed_config`, manually constructing the protobuf type URL. The other is a typed Kubernetes CRD. It's validated, it's readable, it has docs.
->
-> `ClientTrafficPolicy` covers XFF trust, header buffer limits, proxy protocol, HTTP/1/HTTP/2/HTTP/3 settings. `BackendTrafficPolicy` covers retries, timeouts, circuit breaking, rate limiting — all native. No xDS patches for the common 80% of cases.
->
-> The tradeoff: you're running two controllers. Istio for your mesh, Envoy Gateway for your ingress. That's more to operate. Whether that's worth it depends on how much time your team spends writing and debugging EnvoyFilters."
-
----
-
-### Section 5: Live cutover demo (5 min)
-
-```bash
-# Show both running in parallel
-kubectl get pods -n istio-system | grep ingressgateway
-kubectl get pods -n envoy-gateway-system
-
-# Get both IPs
-echo "nginx: $(kubectl get svc ingress-nginx-controller -n ingress-nginx \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-echo "new:   $(kubectl get gateway main-gateway -n istio-system \
-  -o jsonpath='{.status.addresses[0].value}')"
-
-# Test against new gateway
-curl -H "Host: myapp.example.com" http://<NEW_IP>/api/health
-
-# Show access log format is correct
-kubectl logs -n istio-system -l istio=ingressgateway --tail=5
-```
-
-> "Traffic is flowing through the new gateway. DNS isn't changed yet — we're testing with a Host header directly against the IP. This is the validation step before cutover.
->
-> Once DNS is updated and we've verified in production, the ingress-nginx resources come down. The Ingress objects, the controller, the ConfigMap — all of it."
-
-```bash
-kubectl delete ingress myapp -n default
-# Don't remove ingress-nginx controller until all ingresses are migrated
-kubectl get ingress -A   # Should return empty
-helm uninstall ingress-nginx -n ingress-nginx
-```
-
----
-
-### Close (1 min)
-
-> "Three options, one data plane. You're not changing what handles your traffic — Envoy is already there. What you're changing is how you tell it what to do.
->
-> Option A is the fastest migration but not the final state. Option B is the right foundation if Istio is your long-term platform. Option C is worth evaluating if your team is spending meaningful time on EnvoyFilters and you want a cleaner separation of concerns between mesh and ingress.
->
-> The configs we walked through today are all in the repo — Gateway, HTTPRoute, EnvoyFilter equivalents, and the ClientTrafficPolicy alternatives. Start with Option B, keep Option C in your back pocket."

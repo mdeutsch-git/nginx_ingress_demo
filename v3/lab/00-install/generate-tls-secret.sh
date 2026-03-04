@@ -32,10 +32,10 @@ kubectl create secret tls demo-tls-cert \
 kubectl create secret tls demo-tls-cert \
   --cert="${CERT_FILE}" \
   --key="${KEY_FILE}" \
-  -n envoy-gateway-system \
+  -n nginx-demo \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Cleaning up temp files"
 rm -f "${CERT_FILE}" "${KEY_FILE}"
 
-echo "✅ TLS secrets created in istio-system and envoy-gateway-system"
+echo "✅ TLS secrets created in istio-system and nginx-demo"

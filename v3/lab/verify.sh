@@ -24,14 +24,22 @@ case "$STAGE" in
       kubectl get svc ingress-nginx-controller -n ingress-nginx \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     ;;
-  istio-proprietary|istio-gateway-api)
+  istio-proprietary)
     GW_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
       -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
       kubectl get svc istio-ingressgateway -n istio-system \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     ;;
+  istio-gateway-api)
+    # Option B: Istio auto-provisions a Deployment+Service named <gateway-name>-istio
+    # when gatewayClassName: istio is used. Gateway name is "demo-gateway" → service is "demo-gateway-istio"
+    GW_IP=$(kubectl get svc demo-gateway-istio -n istio-system \
+      -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+      kubectl get svc demo-gateway-istio -n istio-system \
+      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+    ;;
   envoy-gateway)
-    GW_IP=$(kubectl get gateway demo-gateway-eg -n default \
+    GW_IP=$(kubectl get gateway demo-gateway-eg -n nginx-demo \
       -o jsonpath='{.status.addresses[0].value}')
     ;;
   *)
@@ -83,10 +91,10 @@ echo "[1/6] Basic HTTP connectivity..."
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${HEADERS[@]}" "${BASE_URL}/status/200")
 if [[ "$STATUS" == "200" ]]; then
   echo "  ✅ HTTP 200 OK"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ Expected 200, got ${STATUS}"
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Test 2: XFF header propagation ───────────────────────────────────────────
@@ -139,7 +147,7 @@ esac
 
 if [[ "$XFF" == *"1.2.3.4"* ]]; then
   echo "  ✅ ${HEADER_LABEL} correctly set: ${XFF}"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ ${HEADER_LABEL} missing or injected IP not found"
   echo "     Got: '${XFF}'"
@@ -153,7 +161,7 @@ else
     envoy-gateway)
       echo "     Note: Envoy Gateway should append to X-Forwarded-For — check numTrustedHops config" ;;
   esac
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Test 3: Single large header (within one buffer) ───────────────────────────
@@ -174,11 +182,11 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
 rm -f /tmp/large-header-single.txt
 if [[ "$STATUS" == "200" ]]; then
   echo "  ✅ 80k single header accepted (200 OK)"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ 80k header rejected (got ${STATUS})"
   echo "     Check large-client-header-buffers / max_request_headers_kb config"
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Test 4: Multiple large headers (exercises the 4-buffer pool) ─────────────
@@ -198,11 +206,11 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
 rm -f /tmp/large-headers-multi.txt
 if [[ "$STATUS" == "200" ]]; then
   echo "  ✅ 4 x 80k headers accepted (200 OK)"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ Multiple large headers rejected (got ${STATUS})"
   echo "     Check large-client-header-buffers count (must be >= 4)"
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Test 5: Proxy gzip compression ───────────────────────────────────────────
@@ -225,14 +233,14 @@ ENCODING=$(curl -s -D - \
   "${BASE_URL}/get" | grep -i "^content-encoding:" | tr -d '\r' || echo "")
 if echo "$ENCODING" | grep -qi "gzip"; then
   echo "  ✅ Gzip compression confirmed: ${ENCODING}"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ No gzip encoding on /get response"
   echo "     Got: '${ENCODING}'"
   echo "     Check: (1) gzip-types includes application/json"
   echo "            (2) min_content_length is not higher than the response body size"
   echo "            (3) EnvoyFilter workloadSelector labels match the gateway pod"
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Test 6: Request body acceptance ──────────────────────────────────────────
@@ -253,11 +261,11 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
 rm -f /tmp/large-body.json
 if [[ "$STATUS" == "200" ]]; then
   echo "  ✅ 1MB body accepted (200 OK)"
-  ((PASS++))
+  PASS=$((PASS+1))
 else
   echo "  ❌ Body rejected (got ${STATUS})"
   echo "     Check body size limit — proxy-body-size / max_request_bytes"
-  ((FAIL++))
+  FAIL=$((FAIL+1))
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

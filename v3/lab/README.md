@@ -202,14 +202,14 @@ helm uninstall ingress-nginx -n ingress-nginx
 
 ## Prerequisites Summary
 
-| Requirement | Minimum version | Check |
+| Requirement | Version used | Check |
 |---|---|---|
-| Kubernetes | 1.28 | `kubectl version` |
-| Helm | 3.12 | `helm version` |
-| istioctl | 1.20 | `istioctl version` |
-| Istio (in cluster) | 1.20 | `kubectl get pods -n istio-system` |
-| Gateway API CRDs | v1.1.0 | `kubectl get crd gateways.gateway.networking.k8s.io` |
-| Envoy Gateway | 1.1.0 | `kubectl get pods -n envoy-gateway-system` |
+| Kubernetes | 1.30+ | `kubectl version` |
+| Helm | 3.14+ | `helm version` |
+| istioctl | 1.29.0 | `istioctl version` |
+| Istio (in cluster) | 1.29.0 | `kubectl get pods -n istio-system` |
+| Gateway API CRDs | v1.5.0 | `kubectl get crd gateways.gateway.networking.k8s.io` |
+| Envoy Gateway | 1.7.0 | `kubectl get pods -n envoy-gateway-system` |
 | LoadBalancer support | — | `kubectl get svc -A \| grep LoadBalancer` |
 
 ## Notes

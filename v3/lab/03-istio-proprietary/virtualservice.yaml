@@ -3,7 +3,7 @@ apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
   name: httpbin
-  namespace: default
+  namespace: nginx-demo
 spec:
   hosts:
     - "myapp.example.com"
