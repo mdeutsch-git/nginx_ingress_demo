@@ -1,0 +1,44 @@
+# 00-install/ingress-nginx-values.yaml
+# Reproduces the customer's exact ingress-nginx ConfigMap settings
+# This is the "before" state for the migration demo
+
+controller:
+  config:
+    # Security — deliberately permissive to enable demo annotations
+    allow-snippet-annotations: "true"
+    annotations-risk-level: "Critical"
+
+    # XFF / forwarding headers
+    http-snippet: |
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    compute-full-forwarded-for: "true"
+    use-forwarded-headers: "true"
+
+    # Compression
+    use-gzip: "true"
+    gzip-types: application/json
+
+    # Header buffer sizing (large — indicates JWT/SAML tokens in headers)
+    client-header-buffer-size: 100k
+    large-client-header-buffers: "4 100k"
+
+    # Body buffer
+    client-body-buffer-size: 64k
+
+    # Custom access log format — matches all fields from the migration guide
+    log-format-upstream: >-
+      $http_x_forwarded_for (xff) - $remote_addr (client) - $remote_user
+      [$time_local] "$request" $status $body_bytes_sent
+      "$http_referer" "$http_user_agent"
+      $request_length $request_time
+      $upstream_response_time $upstream_addr
+
+  # Ensure a LoadBalancer Service is created
+  service:
+    type: LoadBalancer
+
+  # Set ingressClass so existing Ingress resources are picked up
+  ingressClassResource:
+    name: nginx
+    enabled: true
+    default: true

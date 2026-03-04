@@ -1,0 +1,28 @@
+# 03-istio-proprietary/destinationrule.yaml
+# Explicitly declares ISTIO_MUTUAL for upstream connections from the gateway.
+# The istio-ingressgateway works without this due to installation defaults,
+# but being explicit avoids SAN verification failures if those defaults change.
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: httpbin
+  namespace: default
+spec:
+  host: httpbin.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: echoserver
+  namespace: default
+spec:
+  host: echoserver.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

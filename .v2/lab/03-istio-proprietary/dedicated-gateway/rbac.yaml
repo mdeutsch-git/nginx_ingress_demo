@@ -1,0 +1,29 @@
+# 03-istio-proprietary/dedicated-gateway/rbac.yaml
+# The gateway pod needs read access to Secrets in istio-system to
+# fetch TLS certificates referenced by credentialName in the Gateway resource.
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nginx-migration-gateway
+  namespace: istio-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nginx-migration-gateway
+  namespace: istio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nginx-migration-gateway
+subjects:
+  - kind: ServiceAccount
+    name: nginx-migration-gateway
+    namespace: istio-system

@@ -1,0 +1,95 @@
+# 05-envoy-gateway/envoy-patch-policies.yaml
+# Settings that still require raw xDS patching in Envoy Gateway.
+# These are the settings NOT yet covered by ClientTrafficPolicy or BackendTrafficPolicy.
+#
+# Currently in this category:
+#   - Gzip compression (no typed CRD field yet)
+#   - Max request body size / proxy-body-size (no typed CRD field yet)
+#   - Max request header size / large-client-header-buffers (NOT available in ClientTrafficPolicy)
+#
+# Apply AFTER the Gateway is running and has been assigned a listener name.
+# Listener names follow the pattern: <namespace>/<gateway-name>/<listener-name>
+
+---
+# Replaces: use-gzip + gzip-types: application/json
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: gateway-gzip
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-gateway-eg
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+      name: "default/demo-gateway-eg/http"
+      operation:
+        op: add
+        path: "/filter_chains/0/filters/0/typed_config/http_filters/0"
+        value:
+          name: envoy.filters.http.compressor
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor
+            response_direction_config:
+              common_config:
+                min_content_length: 1024
+                content_type:
+                  - application/json
+              disable_on_etag_header: true
+            compressor_library:
+              name: envoy.compression.gzip.compressor
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip
+
+---
+# Replaces: proxy-body-size: 300m
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: gateway-max-body
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-gateway-eg
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+      name: "default/demo-gateway-eg/http"
+      operation:
+        op: add
+        path: "/filter_chains/0/filters/0/typed_config/http_filters/0"
+        value:
+          name: envoy.filters.http.buffer
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+            max_request_bytes: 314572800    # 300 * 1024 * 1024
+
+---
+# Replaces: large-client-header-buffers 4 100k
+# IMPORTANT: max_request_headers_kb is NOT available as a typed field in ClientTrafficPolicy.
+# ClientTrafficPolicy.spec.headers (HeaderSettings) only covers early/late header
+# modification and underscore action — there is no maxRequestHeadersKb field.
+# This must be configured via EnvoyPatchPolicy against the xDS Listener resource.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: gateway-max-request-headers
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-gateway-eg
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+      name: "default/demo-gateway-eg/http"
+      operation:
+        op: add
+        path: "/default_filter_chain/filters/0/typed_config/max_request_headers_kb"
+        value: 100    # matches nginx per-field ceiling (100k per header field)

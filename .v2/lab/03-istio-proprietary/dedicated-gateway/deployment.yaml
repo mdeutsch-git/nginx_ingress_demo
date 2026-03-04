@@ -1,0 +1,80 @@
+# 03-istio-proprietary/dedicated-gateway/deployment.yaml
+# Deploys a second, isolated ingress gateway alongside the existing istio-ingressgateway.
+#
+# Why a dedicated gateway?
+# EnvoyFilters use workloadSelector to target pods by label. The shared istio-ingressgateway
+# carries the label "istio: ingressgateway". Scoping new EnvoyFilters to a unique label on
+# this dedicated gateway means the gzip, body size, header buffer, and log format configs
+# apply here only — the shared gateway and all existing traffic through it are untouched.
+#
+# Apply order:
+#   1. rbac.yaml
+#   2. deployment.yaml (this file)
+#   3. gateway.yaml
+#   4. envoyfilters-dedicated.yaml
+#   5. virtualservice-dedicated.yaml (in parent directory, update gateways: field)
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-migration-gateway
+  namespace: istio-system
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-migration-ingressgateway
+  namespace: istio-system
+  labels:
+    app: nginx-migration-ingressgateway
+    ingress: nginx-migration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-migration-ingressgateway
+      ingress: nginx-migration
+  template:
+    metadata:
+      labels:
+        app: nginx-migration-ingressgateway
+        ingress: nginx-migration          # unique label — EnvoyFilters target this only
+      annotations:
+        inject.istio.io/templates: gateway  # gateway injection template, not sidecar
+        # image: auto below tells istiod to fill in the correct proxy image version
+        # automatically — avoids the version mismatch / CERTIFICATE_VERIFY_FAILED issue
+    spec:
+      serviceAccountName: nginx-migration-gateway
+      containers:
+        - name: istio-proxy
+          image: auto                       # istiod replaces this with the correct version
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-migration-ingressgateway
+  namespace: istio-system
+  labels:
+    app: nginx-migration-ingressgateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx-migration-ingressgateway
+    ingress: nginx-migration
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443

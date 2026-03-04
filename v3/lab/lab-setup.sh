@@ -51,17 +51,21 @@ kubectl rollout status deployment -n nginx-demo --timeout=120s 2>/dev/null || tr
 # X-Forwarded-For before it reaches the application.
 #
 # Idempotent: checks for existing annotation before patching.
-EXISTING_ANNO=$(kubectl get deployment istio-ingressgateway -n istio-system \
-  -o jsonpath='{.spec.template.metadata.annotations.proxy\.istio\.io/config}' 2>/dev/null || echo "")
-if [[ -z "$EXISTING_ANNO" ]]; then
-  echo "  Applying XFF annotation to shared istio-ingressgateway (Option A shared path)..."
-  kubectl patch deployment istio-ingressgateway -n istio-system \
-    --type merge \
-    -p '{"spec":{"template":{"metadata":{"annotations":{"proxy.istio.io/config":"{\"gatewayTopology\":{\"numTrustedProxies\":1}}"}}}}}'
-  kubectl rollout restart deployment istio-ingressgateway -n istio-system
-  kubectl rollout status deployment istio-ingressgateway -n istio-system --timeout=90s
+if kubectl get deployment istio-ingressgateway -n istio-system &>/dev/null; then
+  EXISTING_ANNO=$(kubectl get deployment istio-ingressgateway -n istio-system \
+    -o jsonpath='{.spec.template.metadata.annotations.proxy\.istio\.io/config}' 2>/dev/null || echo "")
+  if [[ -z "$EXISTING_ANNO" ]]; then
+    echo "  Applying XFF annotation to shared istio-ingressgateway (Option A shared path)..."
+    kubectl patch deployment istio-ingressgateway -n istio-system \
+      --type merge \
+      -p '{"spec":{"template":{"metadata":{"annotations":{"proxy.istio.io/config":"{\"gatewayTopology\":{\"numTrustedProxies\":1}}"}}}}}'
+    kubectl rollout restart deployment istio-ingressgateway -n istio-system
+    kubectl rollout status deployment istio-ingressgateway -n istio-system --timeout=90s
+  else
+    echo "  XFF annotation already present on istio-ingressgateway — skipping patch"
+  fi
 else
-  echo "  XFF annotation already present on istio-ingressgateway — skipping patch"
+  echo "  istio-ingressgateway not found in istio-system — skipping XFF patch (deploy it for Option A)"
 fi
 
 echo "==> [3/6] Installing ingress-nginx"

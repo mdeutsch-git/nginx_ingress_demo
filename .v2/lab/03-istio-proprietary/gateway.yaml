@@ -1,0 +1,55 @@
+# 03-istio-proprietary/gateway.yaml
+# Option A — Istio proprietary API
+# Apply in order: meshconfig (via istioctl) → gateway → virtualservice → envoyfilters → telemetry
+
+# Step 1: Update MeshConfig for XFF trust
+# Replaces: compute-full-forwarded-for + use-forwarded-headers + http-snippet
+#
+# Do NOT apply a raw ConfigMap — it replaces the entire mesh config and clobbers
+# existing settings (mTLS, tracing, proxy defaults, extension providers, etc.)
+#
+# Instead run:
+#   istioctl install \
+#     --set meshConfig.defaultConfig.gatewayTopology.numTrustedProxies=1 \
+#     -y
+#
+# This merges only the gatewayTopology field into the existing IstioOperator config.
+#
+# If you manage Istio via an IstioOperator resource, add to your operator spec:
+#
+#   spec:
+#     meshConfig:
+#       defaultConfig:
+#         gatewayTopology:
+#           numTrustedProxies: 1
+#
+# Then apply with: istioctl install -f your-operator.yaml -y
+
+---
+# Step 2: Gateway — defines the ingress listener
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: demo-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "myapp.example.com"
+      # Omitting tls.httpsRedirect = ssl-redirect: false
+
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: demo-tls-cert
+      hosts:
+        - "myapp.example.com"

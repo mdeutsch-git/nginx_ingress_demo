@@ -1,0 +1,63 @@
+# 01-sample-app/echoserver.yaml
+# A lightweight echo backend used specifically for the large-header tests.
+#
+# Why not use httpbin for this?
+# httpbin runs on Werkzeug (Python's dev HTTP server) which has a hardcoded
+# per-field header size limit (~8-16k depending on version). Sending an 80k
+# header to httpbin returns 431 from Werkzeug regardless of what nginx is
+# configured to accept — nginx accepts it fine and proxies it upstream, but
+# Werkzeug rejects it before the route handler runs.
+#
+# The echoserver accepts any header size and returns 200, so the 431 (or 200)
+# you see is actually coming from nginx, not the backend.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echoserver
+  namespace: default
+  labels:
+    app: echoserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echoserver
+  template:
+    metadata:
+      labels:
+        app: echoserver
+    spec:
+      containers:
+        - name: echoserver
+          image: ealen/echo-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echoserver
+  namespace: default
+  labels:
+    app: echoserver
+spec:
+  selector:
+    app: echoserver
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
