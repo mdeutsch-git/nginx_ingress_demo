@@ -40,6 +40,7 @@ spec:
       labels:
         app: nginx-migration-ingressgateway
         ingress: nginx-migration
+        istio.io/rev: default          # triggers the istio-sidecar-injector webhook to replace image: auto
       annotations:
         inject.istio.io/templates: gateway
         proxy.istio.io/config: '{"gatewayTopology": {"numTrustedProxies": 1}}'
