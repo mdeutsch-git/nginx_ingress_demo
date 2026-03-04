@@ -23,6 +23,11 @@ cd "$SCRIPT_DIR"
 EG_VERSION="1.7.0"
 GATEWAY_API_VERSION="v1.5.0"
 
+if ! command -v helm &>/dev/null; then
+  echo "Installing Helm..."
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
+
 echo "==> [1/6] Installing Gateway API CRDs (experimental channel)"
 # Remove the safe-upgrades policy that blocks standard→experimental channel upgrades
 kubectl delete validatingadmissionpolicy safe-upgrades.gateway.networking.k8s.io --ignore-not-found
@@ -77,10 +82,13 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait
 
 echo "==> [4/6] Installing Envoy Gateway"
+# --skip-crds: Gateway API CRDs (v1.5.0) were already applied in step 1.
+# EG's bundled CRDs are older and blocked by the safe-upgrades policy in v1.5.0.
 helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
   --version v${EG_VERSION} \
   -n envoy-gateway-system \
-  --create-namespace
+  --create-namespace \
+  --skip-crds
 kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
 
 echo "==> [5/6] Creating TLS certificate secrets (idempotent)"
