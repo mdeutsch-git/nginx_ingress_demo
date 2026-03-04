@@ -23,9 +23,15 @@ case "$STAGE" in
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     ;;
   istio-proprietary)
-    GW_IP=$(kubectl get svc istio-ingressgateway -n istio-system \
+    # Use dedicated gateway if available (no shared istio-ingressgateway required)
+    if kubectl get svc nginx-migration-ingressgateway -n istio-system &>/dev/null; then
+      GW_SVC="nginx-migration-ingressgateway"
+    else
+      GW_SVC="istio-ingressgateway"
+    fi
+    GW_IP=$(kubectl get svc "$GW_SVC" -n istio-system \
       -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
-      kubectl get svc istio-ingressgateway -n istio-system \
+      kubectl get svc "$GW_SVC" -n istio-system \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     ;;
   istio-gateway-api)
