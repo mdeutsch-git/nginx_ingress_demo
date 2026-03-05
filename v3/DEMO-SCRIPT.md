@@ -57,7 +57,13 @@ Show the live ingress-nginx ConfigMap:
 kubectl get configmap ingress-nginx-controller -n ingress-nginx -o yaml
 ```
 
-> "`annotations-risk-level: Critical` — any team with Ingress create access can inject raw nginx config. `http-snippet` writes directly into `nginx.conf` — no validation, no schema. `client-header-buffer-size: 100k` — changed from the 1k default because something was breaking. This is what 'it works' looks like before it doesn't."
+> "Notice a few things. `annotations-risk-level: Critical` — this means we've explicitly accepted that any team with Ingress create access can inject raw nginx config. That's a security concern.
+>
+> `http-snippet` injects config directly into `nginx.conf`. There's no validation, no schema — it's a string that gets templated in. If there's a syntax error, nginx fails to reload and traffic drops.
+>
+> `client-header-buffer-size: 100k` — the nginx default is 1k. This was changed because something was breaking. We're compensating for a problem rather than understanding it.
+>
+> This is what 'it works' looks like before it doesn't."
 
 Show the current routing in action:
 
@@ -70,18 +76,12 @@ curl -s -o /dev/null -w "HTTP %{http_code}\n" \
 # Show what headers the upstream application actually receives
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${NGINX_IP}/echo | jq '.request.headers | {
-    xff:      .["x-forwarded-for"],
-    orig_xff: .["x-original-forwarded-for"]
-  }'
+  http://${NGINX_IP}/echo | jq '.request.headers["x-forwarded-for"]'
 # Expected:
-# {
-#   "xff":      "1.2.3.4, <nginx-pod-IP>",   ← nginx appended its own outbound IP
-#   "orig_xff": "1.2.3.4"                     ← original preserved under nginx-specific name
-# }
+# "1.2.3.4, <nginx-pod-IP>"   ← incoming IP preserved, nginx appended its own outbound IP
 ```
 
-> "nginx preserves the original `X-Forwarded-For` as `X-Original-Forwarded-For` and appends its own outbound pod IP to the live `X-Forwarded-For`. Any application reading XFF for the client IP is now reading a chain that ends with the nginx pod IP, not the user. `X-Original-Forwarded-For` is a nginx-specific header — nothing else uses that name."
+> "This is what `compute-full-forwarded-for: true` + `use-forwarded-headers: true` + `proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for` gives you. The incoming `X-Forwarded-For` is trusted and the chain is extended — not replaced. The client IP is still visible at the front. This is the behavior we need to preserve across the migration."
 
 Show that gzip is active:
 
@@ -120,6 +120,8 @@ ISTIO_A_IP=$(kubectl get svc nginx-migration-ingressgateway -n istio-system \
 echo "istio-a: ${ISTIO_A_IP}"
 ```
 
+> "The Gateway defines the listener — port, protocol, TLS, which hosts to accept. The VirtualService defines how to route traffic once it's accepted. These are two separate resources, which lets you change routing without touching the listener config."
+
 **Test 1 — Routing works, different gateway same app:**
 ```bash
 curl -s -o /dev/null -w "HTTP %{http_code}\n" \
@@ -133,24 +135,16 @@ curl -s -o /dev/null -w "/echo:   HTTP %{http_code}\n" \
   -H "Host: myapp.example.com" http://${ISTIO_A_IP}/echo
 ```
 
-**Test 2 — XFF behavior has changed:**
+**Test 2 — XFF chain preserved:**
 ```bash
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${ISTIO_A_IP}/echo | jq '.request.headers | {
-    xff:            .["x-forwarded-for"],
-    envoy_ext_addr: .["x-envoy-external-address"],
-    orig_xff:       .["x-original-forwarded-for"]
-  }'
+  http://${ISTIO_A_IP}/echo | jq '.request.headers["x-forwarded-for"]'
 # Expected:
-# {
-#   "xff":            "1.2.3.4,<gateway-pod-IP>", ← Istio appends gateway IP to the XFF chain
-#   "envoy_ext_addr": "1.2.3.4",                  ← trusted client IP extracted and set here
-#   "orig_xff":       null                          ← nginx-specific header gone
-# }
+# "1.2.3.4,<gateway-pod-IP>"  ← client IP preserved at front, gateway IP appended
 ```
 
-> "Two things happened. First, `X-Original-Forwarded-For` is gone — that was nginx-specific. Second, Istio now provides the trusted client IP in `X-Envoy-External-Address` in addition to forwarding the XFF chain with the gateway pod IP appended. Any application that was reading `X-Original-Forwarded-For` needs to switch to `X-Envoy-External-Address`. Any application reading raw `X-Forwarded-For` will now see the full chain ending with the gateway IP — same as before, just a different IP in the chain."
+> "XFF chain behavior is identical to nginx — client IP at the front, gateway appends its own. The nginx-specific `X-Original-Forwarded-For` is gone. Istio also sets `X-Envoy-External-Address` to the extracted trusted client IP, which is useful if you want a single clean header rather than parsing the chain."
 
 **Test 3 — Gzip preserved (via EnvoyFilter):**
 ```bash
@@ -190,7 +184,7 @@ kubectl get envoyfilter -n istio-system
 head -40 03-istio-proprietary/envoyfilters.yaml
 ```
 
-> "All four behaviors are preserved. The cost is these EnvoyFilters — raw xDS config, no validation. A wrong path or field name silently breaks the gateway. This is the honest tradeoff of Option A."
+> "Where does this fall short? The extension model. If I need gzip, or the 300m body limit, I'm writing an EnvoyFilter — raw xDS config wrapped in a Kubernetes resource. It's powerful but unvalidated. A typo here silently breaks the gateway. All four behaviors are preserved. That's the honest tradeoff of Option A."
 
 ```bash
 bash verify.sh istio-proprietary
@@ -200,7 +194,7 @@ bash verify.sh istio-proprietary
 
 ## Section 3: Option B — Istio with Gateway API (5 min)
 
-> "Option B: same Istio control plane, same Envoy data plane, Gateway API instead of istio proprietary resources."
+> "Option B uses the same Istio control plane, same Envoy data plane, but swaps the API to the Kubernetes-standard Gateway API. The reason this matters isn't technical — it's operational."
 
 ```bash
 kubectl apply -f 04-istio-gateway-api/
@@ -219,11 +213,11 @@ echo "istio-b: ${ISTIO_B_IP}"
 
 **Test 1 — Identical behavior to Option A:**
 ```bash
-# XFF: same Istio behavior — X-Envoy-External-Address set, gateway IP appended to XFF chain
+# XFF chain behavior identical — client IP preserved, gateway IP appended
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${ISTIO_B_IP}/echo | jq '.request.headers["x-envoy-external-address"]'
-# → "1.2.3.4"
+  http://${ISTIO_B_IP}/echo | jq '.request.headers["x-forwarded-for"]'
+# → "1.2.3.4,<gateway-pod-IP>"
 ```
 
 **Test 2 — HTTPRoute portability (the key demo point for Option B):**
@@ -245,7 +239,13 @@ kubectl get gateway demo-gateway -n istio-system -o jsonpath='{.spec.listeners[*
 kubectl get httproute -A
 ```
 
-> "Platform team owns the Gateway in `istio-system`. Application team owns the HTTPRoute in `nginx-demo`. They are independent resources owned by different teams in different namespaces. ingress-nginx has no equivalent — there's one Ingress controller and everyone goes through it."
+> "Two things I want to highlight.
+>
+> First — `allowedRoutes.namespaces.from: All`. This is the cluster operator saying 'any namespace can attach routes to this gateway.' If I set this to `Selector`, only specific namespaces can. ingress-nginx has no equivalent — any namespace can create an Ingress and it goes through the same controller.
+>
+> Second — the HTTPRoute is in the `nginx-demo` namespace. The Gateway is in `istio-system`. Different teams own these. The application team writes the HTTPRoute; the platform team writes the Gateway. No overlap, no stepping on each other.
+>
+> The EnvoyFilter story is the same as Option A — still raw xDS for anything beyond routing. That's the honest limitation."
 
 ```bash
 bash verify.sh istio-gateway-api
@@ -255,7 +255,9 @@ bash verify.sh istio-gateway-api
 
 ## Section 4: Option C — Envoy Gateway (6 min)
 
-> "Envoy Gateway is a separate controller — not Istio. No mesh, no sidecars. Same Gateway API. The extension model is the reason to look at it."
+> "Envoy Gateway is a separate controller. It's not Istio. It doesn't do service mesh. But it implements the same Gateway API — meaning the HTTPRoute we just wrote works unchanged against it.
+>
+> The reason to consider it alongside Istio is the extension model. Watch this."
 
 Show the key comparison:
 ```bash
@@ -265,6 +267,12 @@ grep -A 12 "max_request_headers_kb" 03-istio-proprietary/envoyfilters.yaml
 # Envoy Gateway: typed CRD
 kubectl explain clienttrafficpolicy.spec.clientIPDetection
 ```
+
+> "Same outcome. One is raw xDS — `envoy.filters.network.http_connection_manager`, `typed_config`, manually constructing the protobuf type URL. The other is a typed Kubernetes CRD. It's validated, it's readable, it has docs.
+>
+> `ClientTrafficPolicy` covers XFF trust, header buffer limits, proxy protocol, HTTP/1/HTTP/2/HTTP/3 settings. `BackendTrafficPolicy` covers retries, timeouts, circuit breaking, rate limiting — all native. No xDS patches for the common 80% of cases.
+>
+> The tradeoff: you're running two controllers. Istio for your mesh, Envoy Gateway for your ingress. That's more to operate. Whether that's worth it depends on how much time your team spends writing and debugging EnvoyFilters."
 
 Apply:
 ```bash
@@ -280,22 +288,16 @@ EG_IP=$(kubectl get gateway demo-gateway-eg -n nginx-demo \
 echo "envoy-gw: ${EG_IP}"
 ```
 
-**Test 1 — XFF behavior compared to Istio:**
+**Test 1 — XFF chain preserved:**
 ```bash
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${EG_IP}/echo | jq '.request.headers | {
-    xff:            .["x-forwarded-for"],
-    envoy_ext_addr: .["x-envoy-external-address"]
-  }'
+  http://${EG_IP}/echo | jq '.request.headers["x-forwarded-for"]'
 # Expected:
-# {
-#   "xff":            "1.2.3.4,<gateway-IP>", ← EG appends and forwards — same pattern as Istio
-#   "envoy_ext_addr": null                     ← not set by EG (Istio-specific header)
-# }
+# "1.2.3.4,<gateway-IP>"  ← client IP preserved at front, gateway IP appended
 ```
 
-> "Same XFF chain behavior as Istio — client IP is preserved, gateway appends its own IP. The difference is `X-Envoy-External-Address` is not set by Envoy Gateway. That's an Istio-specific header. Applications that switched to reading `X-Envoy-External-Address` for the Istio migration would need to switch back to reading `X-Forwarded-For` if they later move to Envoy Gateway."
+> "Same XFF chain behavior as nginx and Istio. One difference from Istio: `X-Envoy-External-Address` is not set — that's an Istio-specific header. Applications that read `X-Envoy-External-Address` would need to switch back to `X-Forwarded-For` when moving from Istio to Envoy Gateway."
 
 **Test 2 — Same routing, different controller (portability):**
 ```bash
@@ -346,31 +348,31 @@ bash verify.sh envoy-gateway
 > "Let me show the single biggest operational difference between all three options in one block."
 
 ```bash
-echo "=== nginx (X-Original-Forwarded-For) ==="
+echo "=== nginx (X-Forwarded-For chain) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
   http://${NGINX_IP}/echo \
-  | jq -r '(.request.headers["x-original-forwarded-for"] // "(not set)") | "  \(.)"'
+  | jq -r '(.request.headers["x-forwarded-for"] // "(not set)") | "  \(.)"'
 
-echo "=== Istio — Options A and B (X-Envoy-External-Address) ==="
+echo "=== Istio — Options A and B (X-Forwarded-For chain) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
   http://${ISTIO_B_IP}/echo \
-  | jq -r '(.request.headers["x-envoy-external-address"] // "(not set)") | "  \(.)"'
+  | jq -r '(.request.headers["x-forwarded-for"] // "(not set)") | "  \(.)"'
 
-echo "=== Envoy Gateway — Option C (X-Forwarded-For) ==="
+echo "=== Envoy Gateway — Option C (X-Forwarded-For chain) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
   http://${EG_IP}/echo \
   | jq -r '(.request.headers["x-forwarded-for"] // "(not set)") | "  \(.)"'
 
 # Expected output:
-# === nginx (X-Original-Forwarded-For) ===
-#   1.2.3.4
-# === Istio — Options A and B (X-Envoy-External-Address) ===
-#   1.2.3.4
-# === Envoy Gateway — Option C (X-Forwarded-For) ===
+# === nginx (X-Forwarded-For chain) ===
+#   1.2.3.4, <nginx-pod-IP>
+# === Istio — Options A and B (X-Forwarded-For chain) ===
+#   1.2.3.4, <gateway-pod-IP>
+# === Envoy Gateway — Option C (X-Forwarded-For chain) ===
 #   1.2.3.4, <gateway-ip>
 ```
 
-> "All three correctly identify the client IP — just from different headers. nginx preserves it in `X-Original-Forwarded-For`. Istio extracts it into `X-Envoy-External-Address`. Envoy Gateway keeps it at the front of the standard `X-Forwarded-For` chain. This is a migration checklist item, not a blocking issue — but every application that reads the client IP header needs to know which header to read per option."
+> "All three preserve the client IP at the front of the XFF chain — same behavior, different proxy IP appended. The XFF behavior is consistent across the migration. The one Istio bonus: it also sets `X-Envoy-External-Address` to the extracted client IP, giving applications a cleaner single-value header. That header is Istio-specific and won't be present with nginx or Envoy Gateway."
 
 ---
 
@@ -416,15 +418,15 @@ helm uninstall ingress-nginx -n ingress-nginx
 
 ## Close (1 min)
 
-> "Three options, one data plane.
+> "Three options, one data plane. You're not changing what handles your traffic — Envoy is already there. What you're changing is how you tell it what to do.
 >
-> Option A is the fastest path — an afternoon migration if your team knows Istio. Not the final state, but it removes the nginx dependency immediately and gets you to Envoy everywhere.
+> Option A is the fastest migration but not the final state. It removes the nginx dependency immediately and gets you to Envoy everywhere — an afternoon migration if your team already knows Istio.
 >
-> Option B is the right foundation. Gateway API portability means the HTTPRoute you write today works if you change controllers later. The multi-tenancy model scales as more teams adopt it.
+> Option B is the right foundation if Istio is your long-term platform. Gateway API portability means the HTTPRoute you write today works if you change controllers later. The multi-tenancy model scales as more teams adopt it.
 >
-> Option C is worth the conversation if your team spends real time on EnvoyFilters. The typed policy CRDs are a meaningfully better operational model for the 80% of common cases — at the cost of a second controller to operate.
+> Option C is worth evaluating if your team is spending meaningful time on EnvoyFilters and you want a cleaner separation of concerns between mesh and ingress. The typed policy CRDs are a meaningfully better operational model for the 80% of common cases — at the cost of a second controller to operate.
 >
-> All configs are in the lab package. Start with Option B."
+> The configs we walked through today are all in the lab package — Gateway, HTTPRoute, EnvoyFilter equivalents, and the ClientTrafficPolicy alternatives. Start with Option B, keep Option C in your back pocket."
 
 ---
 

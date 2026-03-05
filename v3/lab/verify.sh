@@ -95,22 +95,16 @@ RESPONSE=$(curl -s "${HEADERS[@]}" -H "X-Forwarded-For: 1.2.3.4" "${BASE_URL}/ec
 
 case "$STAGE" in
   nginx)
-    # nginx renames incoming XFF to X-Original-Forwarded-For
+    # nginx with compute-full-forwarded-for + use-forwarded-headers appends its
+    # outbound IP to the incoming XFF chain and passes the full chain upstream
     XFF=$(echo "$RESPONSE" | \
-      jq -r '.request.headers["x-original-forwarded-for"] // empty' \
+      jq -r '.request.headers["x-forwarded-for"] // empty' \
       2>/dev/null || echo "")
-    HEADER_LABEL="X-Original-Forwarded-For"
+    HEADER_LABEL="X-Forwarded-For"
     ;;
-  istio-proprietary|istio-gateway-api)
-    # Istio appends the gateway IP to the XFF chain and also exposes the trusted
-    # client IP via X-Envoy-External-Address.
-    XFF=$(echo "$RESPONSE" | \
-      jq -r '.request.headers["x-envoy-external-address"] // empty' \
-      2>/dev/null || echo "")
-    HEADER_LABEL="X-Envoy-External-Address"
-    ;;
-  envoy-gateway)
-    # Envoy Gateway appends to X-Forwarded-For and passes it to the upstream
+  istio-proprietary|istio-gateway-api|envoy-gateway)
+    # All Envoy-based stages append the gateway IP to the XFF chain and pass
+    # the full chain upstream; client IP remains at the front
     XFF=$(echo "$RESPONSE" | \
       jq -r '.request.headers["x-forwarded-for"] // empty' \
       2>/dev/null || echo "")
@@ -127,12 +121,11 @@ else
   echo "     Expected value containing: 1.2.3.4"
   case "$STAGE" in
     nginx)
-      echo "     Note: nginx with use-forwarded-headers renames XFF to X-Original-Forwarded-For" ;;
+      echo "     Note: check compute-full-forwarded-for and use-forwarded-headers are enabled" ;;
     istio-proprietary|istio-gateway-api)
-      echo "     Note: Istio extracts trusted client IP from XFF into X-Envoy-External-Address"
-      echo "     Raw X-Forwarded-For is not forwarded into the mesh on internal hops" ;;
+      echo "     Note: check proxy.istio.io/config numTrustedProxies annotation on gateway pod" ;;
     envoy-gateway)
-      echo "     Note: Envoy Gateway should append to X-Forwarded-For — check numTrustedHops config" ;;
+      echo "     Note: check ClientTrafficPolicy numTrustedHops config" ;;
   esac
   FAIL=$((FAIL+1))
 fi
