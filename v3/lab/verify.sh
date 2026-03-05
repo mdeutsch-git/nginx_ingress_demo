@@ -91,31 +91,28 @@ fi
 #     Appends to X-Forwarded-For and forwards it to the upstream
 #     Check: X-Forwarded-For contains injected IP
 echo "[2/4] XFF header propagation..."
-RESPONSE=$(curl -s "${HEADERS[@]}" -H "X-Forwarded-For: 1.2.3.4" "${BASE_URL}/headers")
+RESPONSE=$(curl -s "${HEADERS[@]}" -H "X-Forwarded-For: 1.2.3.4" "${BASE_URL}/echo")
 
 case "$STAGE" in
   nginx)
     # nginx renames incoming XFF to X-Original-Forwarded-For
     XFF=$(echo "$RESPONSE" | \
-      jq -r '(.headers | to_entries[] |
-        select(.key | ascii_downcase == "x-original-forwarded-for") | .value) // empty' \
+      jq -r '.request.headers["x-original-forwarded-for"] // empty' \
       2>/dev/null || echo "")
     HEADER_LABEL="X-Original-Forwarded-For"
     ;;
   istio-proprietary|istio-gateway-api)
-    # Istio consumes XFF at the gateway edge and exposes the trusted client IP
-    # via X-Envoy-External-Address. Raw XFF is not forwarded into the mesh.
+    # Istio appends the gateway IP to the XFF chain and also exposes the trusted
+    # client IP via X-Envoy-External-Address.
     XFF=$(echo "$RESPONSE" | \
-      jq -r '(.headers | to_entries[] |
-        select(.key | ascii_downcase == "x-envoy-external-address") | .value) // empty' \
+      jq -r '.request.headers["x-envoy-external-address"] // empty' \
       2>/dev/null || echo "")
     HEADER_LABEL="X-Envoy-External-Address"
     ;;
   envoy-gateway)
     # Envoy Gateway appends to X-Forwarded-For and passes it to the upstream
     XFF=$(echo "$RESPONSE" | \
-      jq -r '(.headers | to_entries[] |
-        select(.key | ascii_downcase == "x-forwarded-for") | .value) // empty' \
+      jq -r '.request.headers["x-forwarded-for"] // empty' \
       2>/dev/null || echo "")
     HEADER_LABEL="X-Forwarded-For"
     ;;

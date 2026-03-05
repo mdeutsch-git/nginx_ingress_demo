@@ -70,18 +70,18 @@ curl -s -o /dev/null -w "HTTP %{http_code}\n" \
 # Show what headers the upstream application actually receives
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${NGINX_IP}/headers | jq '.headers | {
-    xff:      .["X-Forwarded-For"],
-    orig_xff: .["X-Original-Forwarded-For"]
+  http://${NGINX_IP}/echo | jq '.request.headers | {
+    xff:      .["x-forwarded-for"],
+    orig_xff: .["x-original-forwarded-for"]
   }'
 # Expected:
 # {
-#   "xff":      "<nginx-pod-IP>",         ← nginx replaced it with its own outbound IP
-#   "orig_xff": "1.2.3.4"                 ← original renamed by use-forwarded-headers
+#   "xff":      "1.2.3.4, <nginx-pod-IP>",   ← nginx appended its own outbound IP
+#   "orig_xff": "1.2.3.4"                     ← original preserved under nginx-specific name
 # }
 ```
 
-> "nginx renames the incoming `X-Forwarded-For` to `X-Original-Forwarded-For` and sets its own XFF to the outbound pod IP. Any application reading XFF for the client IP is reading the nginx pod IP, not the user. `X-Original-Forwarded-For` is a nginx-specific header — nothing else uses that name."
+> "nginx preserves the original `X-Forwarded-For` as `X-Original-Forwarded-For` and appends its own outbound pod IP to the live `X-Forwarded-For`. Any application reading XFF for the client IP is now reading a chain that ends with the nginx pod IP, not the user. `X-Original-Forwarded-For` is a nginx-specific header — nothing else uses that name."
 
 Show that gzip is active:
 
@@ -94,7 +94,7 @@ curl -s -I -H "Host: myapp.example.com" \
 # → content-encoding: gzip
 ```
 
-> "These two behaviors — XFF handling and gzip — are what we need to preserve across the migration. Watch what changes as we move to each option."
+> "These two behaviors — XFF handling and gzip — are examples of what we need to preserve across the migration. Watch what changes as we move to each option."
 
 ---
 
@@ -137,20 +137,20 @@ curl -s -o /dev/null -w "/echo:   HTTP %{http_code}\n" \
 ```bash
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${ISTIO_A_IP}/headers | jq '.headers | {
-    xff:              .["X-Forwarded-For"],
-    envoy_ext_addr:   .["X-Envoy-External-Address"],
-    orig_xff:         .["X-Original-Forwarded-For"]
+  http://${ISTIO_A_IP}/echo | jq '.request.headers | {
+    xff:            .["x-forwarded-for"],
+    envoy_ext_addr: .["x-envoy-external-address"],
+    orig_xff:       .["x-original-forwarded-for"]
   }'
 # Expected:
 # {
-#   "xff":            null,      ← Istio strips raw XFF on internal mesh hops
-#   "envoy_ext_addr": "1.2.3.4", ← trusted client IP extracted here instead
-#   "orig_xff":       null       ← nginx-specific header gone
+#   "xff":            "1.2.3.4,<gateway-pod-IP>", ← Istio appends gateway IP to the XFF chain
+#   "envoy_ext_addr": "1.2.3.4",                  ← trusted client IP extracted and set here
+#   "orig_xff":       null                          ← nginx-specific header gone
 # }
 ```
 
-> "This is the first application impact to flag. Istio extracts the trusted client IP from XFF and exposes it as `X-Envoy-External-Address`. The raw XFF header is deliberately stripped on internal mesh hops as a security property — Envoy won't let a downstream fabricate trusted forwarding headers. Any application reading `X-Forwarded-For` for the original client IP needs to read `X-Envoy-External-Address` instead."
+> "Two things happened. First, `X-Original-Forwarded-For` is gone — that was nginx-specific. Second, Istio now provides the trusted client IP in `X-Envoy-External-Address` in addition to forwarding the XFF chain with the gateway pod IP appended. Any application that was reading `X-Original-Forwarded-For` needs to switch to `X-Envoy-External-Address`. Any application reading raw `X-Forwarded-For` will now see the full chain ending with the gateway IP — same as before, just a different IP in the chain."
 
 **Test 3 — Gzip preserved (via EnvoyFilter):**
 ```bash
@@ -180,7 +180,7 @@ rm /tmp/body.json
 kubectl logs -n istio-system -l ingress=nginx-migration -f --tail=0
 
 # The log line should match the nginx-equivalent format:
-# 1.2.3.4 (xff) - 10.x.x.x (client) - [timestamp] "GET /headers HTTP/1.1" 200 ...
+# 1.2.3.4 (xff) - 10.x.x.x (client) - [timestamp] "GET /echo HTTP/1.1" 200 ...
 ```
 
 Show the EnvoyFilter that enables all of this:
@@ -200,7 +200,7 @@ bash verify.sh istio-proprietary
 
 ## Section 3: Option B — Istio with Gateway API (5 min)
 
-> "Option B: same Istio control plane, same Envoy data plane, Gateway API instead of proprietary resources."
+> "Option B: same Istio control plane, same Envoy data plane, Gateway API instead of istio proprietary resources."
 
 ```bash
 kubectl apply -f 04-istio-gateway-api/
@@ -219,10 +219,10 @@ echo "istio-b: ${ISTIO_B_IP}"
 
 **Test 1 — Identical behavior to Option A:**
 ```bash
-# XFF: same Istio behavior — X-Envoy-External-Address, raw XFF stripped
+# XFF: same Istio behavior — X-Envoy-External-Address set, gateway IP appended to XFF chain
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${ISTIO_B_IP}/headers | jq '.headers["X-Envoy-External-Address"]'
+  http://${ISTIO_B_IP}/echo | jq '.request.headers["x-envoy-external-address"]'
 # → "1.2.3.4"
 ```
 
@@ -280,22 +280,22 @@ EG_IP=$(kubectl get gateway demo-gateway-eg -n nginx-demo \
 echo "envoy-gw: ${EG_IP}"
 ```
 
-**Test 1 — XFF behavior is DIFFERENT from Istio:**
+**Test 1 — XFF behavior compared to Istio:**
 ```bash
 curl -s -H "Host: myapp.example.com" \
   -H "X-Forwarded-For: 1.2.3.4" \
-  http://${EG_IP}/headers | jq '.headers | {
-    xff:            .["X-Forwarded-For"],
-    envoy_ext_addr: .["X-Envoy-External-Address"]
+  http://${EG_IP}/echo | jq '.request.headers | {
+    xff:            .["x-forwarded-for"],
+    envoy_ext_addr: .["x-envoy-external-address"]
   }'
 # Expected:
 # {
-#   "xff":            "1.2.3.4, <gateway-IP>", ← EG appends and forwards — traditional behavior
-#   "envoy_ext_addr": null                      ← not set by EG
+#   "xff":            "1.2.3.4,<gateway-IP>", ← EG appends and forwards — same pattern as Istio
+#   "envoy_ext_addr": null                     ← not set by EG (Istio-specific header)
 # }
 ```
 
-> "This is a meaningful difference. Envoy Gateway appends to `X-Forwarded-For` and passes it to the upstream — traditional proxy behavior. Istio strips it on mesh hops. Applications reading `X-Forwarded-For` directly will work as-is with Envoy Gateway. Applications migrating from Istio to Envoy Gateway need to change back from `X-Envoy-External-Address` to `X-Forwarded-For`."
+> "Same XFF chain behavior as Istio — client IP is preserved, gateway appends its own IP. The difference is `X-Envoy-External-Address` is not set by Envoy Gateway. That's an Istio-specific header. Applications that switched to reading `X-Envoy-External-Address` for the Istio migration would need to switch back to reading `X-Forwarded-For` if they later move to Envoy Gateway."
 
 **Test 2 — Same routing, different controller (portability):**
 ```bash
@@ -348,18 +348,18 @@ bash verify.sh envoy-gateway
 ```bash
 echo "=== nginx (X-Original-Forwarded-For) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
-  http://${NGINX_IP}/headers \
-  | jq -r '(.headers["X-Original-Forwarded-For"] // "(not set)") | "  \(.)"'
+  http://${NGINX_IP}/echo \
+  | jq -r '(.request.headers["x-original-forwarded-for"] // "(not set)") | "  \(.)"'
 
 echo "=== Istio — Options A and B (X-Envoy-External-Address) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
-  http://${ISTIO_B_IP}/headers \
-  | jq -r '(.headers["X-Envoy-External-Address"] // "(not set)") | "  \(.)"'
+  http://${ISTIO_B_IP}/echo \
+  | jq -r '(.request.headers["x-envoy-external-address"] // "(not set)") | "  \(.)"'
 
 echo "=== Envoy Gateway — Option C (X-Forwarded-For) ==="
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
-  http://${EG_IP}/headers \
-  | jq -r '(.headers["X-Forwarded-For"] // "(not set)") | "  \(.)"'
+  http://${EG_IP}/echo \
+  | jq -r '(.request.headers["x-forwarded-for"] // "(not set)") | "  \(.)"'
 
 # Expected output:
 # === nginx (X-Original-Forwarded-For) ===
@@ -370,7 +370,7 @@ curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
 #   1.2.3.4, <gateway-ip>
 ```
 
-> "All three correctly identify the client IP. The header name is what changes. This is a migration checklist item, not a blocking issue — but every application that reads the client IP header needs to know which header to read. Document the header name per option before cutting over."
+> "All three correctly identify the client IP — just from different headers. nginx preserves it in `X-Original-Forwarded-For`. Istio extracts it into `X-Envoy-External-Address`. Envoy Gateway keeps it at the front of the standard `X-Forwarded-For` chain. This is a migration checklist item, not a blocking issue — but every application that reads the client IP header needs to know which header to read per option."
 
 ---
 
@@ -434,8 +434,8 @@ helm uninstall ingress-nginx -n ingress-nginx
 # ── XFF / headers ─────────────────────────────────────────────────────────────
 # Show full header picture from upstream for any gateway IP
 curl -s -H "Host: myapp.example.com" -H "X-Forwarded-For: 1.2.3.4" \
-  http://${GW_IP}/headers | jq '.headers | with_entries(
-    select(.key | test("(?i)forward|envoy-external|real-ip|remote"))
+  http://${GW_IP}/echo | jq '.request.headers | with_entries(
+    select(.key | test("forward|envoy-external|real-ip|remote"))
   )'
 
 # ── Gzip ──────────────────────────────────────────────────────────────────────
