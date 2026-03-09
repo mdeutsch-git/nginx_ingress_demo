@@ -9,7 +9,7 @@ metadata:
 spec:
   parentRefs:
     - name: demo-gateway
-      namespace: istio-system
+      namespace: nginx-demo
       sectionName: http
   hostnames:
     - "myapp.example.com"

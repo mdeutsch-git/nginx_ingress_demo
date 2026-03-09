@@ -32,7 +32,7 @@ case "$STAGE" in
   istio-gateway-api)
     # Option B: Istio auto-provisions a Deployment+Service named <gateway-name>-istio
     # when gatewayClassName: istio is used. Gateway name is "demo-gateway" → service is "demo-gateway-istio"
-    GW_IP=$(kubectl get svc demo-gateway-istio -n istio-system \
+    GW_IP=$(kubectl get svc demo-gateway-istio -n nginx-demo \
       -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
       kubectl get svc demo-gateway-istio -n istio-system \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')

@@ -1,10 +1,84 @@
 # Demo Script: ingress-nginx → Istio / Envoy Gateway
 
-> **Format:** Verbal walkthrough for a technical audience.
-> **Estimated time:** 25–30 minutes.
-> **Working directory:** `v3/lab/` for all commands.
+> **Format:** Verbal walkthrough for a technical audience. <br>
+> **Estimated time:** 25–30 minutes.<br>
+> **Working directory:** `v3/lab/` for all commands. <br>
+> **Customer Focus:** 
+---
+
+## Customer Notes 
+
+Nginx Controller Config 
+```
+  config:
+    allow-snippet-annotations: "true"
+    annotations-risk-level: "Critical"
+    http-snippet: |
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    compute-full-forwarded-for: "true"
+    gzip-types: application/json
+    use-gzip: "true"  
+    client-header-buffer-size: 100k
+    large-client-header-buffers: 4 100k
+    log-format-upstream: $http_x_forwarded_for (xff) - $remote_addr (client) - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_length $request_time $upstream_response_time $upstream_addr
+    use-forwarded-headers: "true"
+    client-body-buffer-size: 64k
+```
+Ingress Annotations
+```
+    nginx.ingress.kubernetes.io/proxy-body-size: 300m
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+```
+
 
 ---
+## Demo Purpose 
+
+Customer has asked for a demo of how to move from ingress-nginx to another ingress pattern. 
+This demo is aimed to outline some of those migration strategies with a focus on their existing configurations.
+
+
+### 1. Context and Problem Statement
+
+ingress-nginx works, but it has well-understood limitations that become friction points as platform maturity increases:
+
+- **Configuration model is nginx, not Kubernetes.** Extensions require raw nginx config via `http-snippet` or `configuration-snippet` annotations. This is fragile, hard to validate, and a known security surface (arbitrary nginx directive injection).
+- **`annotations-risk-level: Critical`** being set is a signal the team has already pushed past the intended safety guardrails to get features working. This is technical debt.
+- **No native resilience primitives.** Retries, circuit breaking, and fault injection all require external tooling or nginx annotations with limited semantics.
+- **End of active development trajectory.** The Kubernetes community's forward path is the Gateway API. ingress-nginx has no migration path to it.
+
+**The existing Istio investment matters.** The cluster already has Envoy sidecars, mTLS, and observability in place. The question is not whether to change data planes — it's how to extend the existing Envoy investment to the ingress layer as well.
+
+### 2. The Three Options
+| | Option A | Option B | Option C |
+|---|---|---|---|
+| **API standard** | Istio proprietary | Gateway API (portable) | Gateway API (portable) |
+| **Controller** | Istio (istiod) | Istio (istiod) | Envoy Gateway |
+| **Data plane** | Envoy | Envoy | Envoy |
+| **Mesh capabilities** | ✅ Full | ✅ Full | ❌ Ingress only |
+| **Migration effort** | Lowest | Medium | Medium-High |
+| **Future portability** | Low | High | High |
+| **Extension model** | `EnvoyFilter` (raw xDS) | `EnvoyFilter` (raw xDS) | Typed policy CRDs + `EnvoyPatchPolicy` for gaps |
+
+### 3. Decision Framework
+
+**Choose Option A (Istio proprietary) if:**
+- You want the fastest migration with least disruption
+- Your team already knows VirtualService/DestinationRule
+- You accept that you'll eventually want to migrate to Gateway API anyway (this is not the end state)
+
+**Choose Option B (Istio + Gateway API) if:**
+- You want to invest once and build on the right foundation
+- You have multiple teams managing routes (the multi-tenancy model matters)
+- You plan to potentially swap controllers later (e.g., move to Envoy Gateway)
+
+**Choose Option C (Envoy Gateway) if:**
+- You want to separate ingress concerns from mesh concerns operationally
+- Your team finds Istio's operational complexity higher than needed for the ingress use case
+- You want first-class typed policy CRDs instead of raw `EnvoyFilter` patches for common config
+- You are willing to run two controllers (Istio for mesh, EG for ingress)
+
+> **Note on Option C:** Running Envoy Gateway alongside Istio is a valid and increasingly common pattern. EG handles north-south traffic; Istio handles east-west. They share the same data plane (Envoy) and can be configured to interoperate with Istio's mTLS via `BackendTLSPolicy`.
 
 ## Pre-Demo Setup
 
@@ -45,11 +119,10 @@ echo "nginx: ${NGINX_IP}"
 
 > "Today we're going to walk through what it looks like to migrate off ingress-nginx when you already have Istio in place. This isn't a theoretical discussion — we'll look at real configs and run a live migration.
 >
-> The question we're answering isn't 'should we use Envoy' — you already are. Every time a request hits your ingress-nginx controller, Envoy sidecars are handling the internal traffic. What we're doing today is extending that same data plane to the edge, and deciding how we want to manage it."
 
 ---
 
-## Section 1: What's wrong with the current state (4 min)
+## Section 1: What is the current state? (4 min)
 
 Show the live ingress-nginx ConfigMap:
 
@@ -456,6 +529,9 @@ curl -s -o /dev/null -w "1MB body: HTTP %{http_code}\n" \
 rm /tmp/body.json
 
 # ── Live access logs ──────────────────────────────────────────────────────────
+# Initial State
+kubectl logs -n ingress-nginx ingress-nginx-controller-564b775c95-s79hh -f
+
 # Option A dedicated gateway:
 kubectl logs -n istio-system -l ingress=nginx-migration -f --tail=0
 # Option B auto-provisioned pod:

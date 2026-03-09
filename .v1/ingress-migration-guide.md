@@ -1070,7 +1070,7 @@ kubectl describe envoyfilter gateway-max-body -n istio-system
 
 ### Section 3: Option B — Istio with Gateway API (5 min)
 
-> "Option B uses the same Istio control plane, same Envoy data plane, but swaps the API to the Kubernetes-standard Gateway API. The reason this matters isn't technical — it's operational."
+> "Option B uses the same Istio control plane, same Envoy data plane, but swaps the API to the Kubernetes-standard Gateway API. The reason this matters isn't technical — it's operational. Gateway API provides a clear demarcation of responsibilities with the platform team owning the Gateway and the application teams owning the HTTPRoute"
 
 Apply and show:
 

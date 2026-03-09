@@ -108,6 +108,7 @@ helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
   --version v${EG_VERSION} \
   -n envoy-gateway-system \
   --create-namespace \
+  --set "config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true" \
   --skip-crds
 kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
 

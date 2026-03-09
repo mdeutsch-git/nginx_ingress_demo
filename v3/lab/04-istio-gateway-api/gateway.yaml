@@ -14,7 +14,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: demo-gateway
-  namespace: istio-system
+  namespace: nginx-demo
   annotations:
     proxy.istio.io/config: '{"gatewayTopology": {"numTrustedProxies": 1}}'
 spec:
